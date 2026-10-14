@@ -1,0 +1,24 @@
+# .gitignore — ห้าม commit ข้อมูลลับลง Git
+
+# Kick / OAuth credentials & tokens
+kick_credentials.json
+kick_credentials.env
+.kick_credentials.json
+credentials.json
+kick_tokens.json
+*tokens*.json
+!tests/fixtures/*tokens*.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# OS / editor
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
+.idea/
