@@ -184,6 +184,11 @@ class WebSocket:
         self.sock = sock
         self._buf = bytearray(leftover)
         self.timeout = timeout
+        # ข้อมูลที่เก็บไว้เพื่อการวินิจฉัย (ใช้โดยคำสั่ง fix-config)
+        self.handshake_status = ""
+        self.handshake_headers: dict[str, str] = {}
+        self.host = ""
+        self.resolved_ips: list[str] = []
 
     # --- อ่าน/เขียนระดับล่าง ---
     def _recv_into_buf(self, timeout: float | None) -> None:
@@ -273,6 +278,12 @@ def ws_connect(url: str, timeout: float = 10.0, origin: str = PUSHER_ORIGIN) -> 
     port = parsed.port or (443 if scheme in ("wss", "https") else 80)
     path = (parsed.path or "/") + (f"?{parsed.query}" if parsed.query else "")
 
+    resolved: list[str] = []
+    try:
+        resolved = resolve_host(host, port)
+    except OSError:
+        pass
+
     sock = socket.create_connection((host, port), timeout=timeout)
     if scheme in ("wss", "https"):
         ctx = ssl.create_default_context()
@@ -316,12 +327,22 @@ def ws_connect(url: str, timeout: float = 10.0, origin: str = PUSHER_ORIGIN) -> 
     expected = base64.b64encode(
         __import__("hashlib").sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
     ).decode()
+    headers: dict[str, str] = {}
     for line in head.split(b"\r\n")[1:]:
         name, _, value = line.partition(b":")
-        if name.strip().lower() == b"sec-websocket-accept" and value.strip().decode() != expected:
+        hname = name.strip().decode("latin-1", "replace")
+        hvalue = value.strip().decode("latin-1", "replace")
+        if hname:
+            headers[hname] = hvalue
+        if hname.lower() == "sec-websocket-accept" and hvalue != expected:
             warn("Sec-WebSocket-Accept ไม่ตรงตามสเปก (ทำงานต่อ)")
 
-    return WebSocket(sock, leftover, timeout=timeout)
+    client = WebSocket(sock, leftover, timeout=timeout)
+    client.handshake_status = status_line
+    client.handshake_headers = headers
+    client.host = host
+    client.resolved_ips = resolved
+    return client
 
 
 # ---------------------------------------------------------------------------
@@ -343,10 +364,24 @@ class PusherClient:
         self.socket_id = ""
         self.activity_timeout = 120
         self.idle_ping = idle_ping
+        self.handshake: dict = {}
+        self.last_error: str | None = None
+
+    def _record_handshake(self) -> None:
+        ws = self.ws
+        if ws is None:
+            return
+        self.handshake = {
+            "host": ws.host,
+            "ips": list(ws.resolved_ips),
+            "status": ws.handshake_status,
+            "headers": dict(ws.handshake_headers),
+        }
 
     # --- lifecycle ---
     def connect(self) -> dict:
         self.ws = ws_connect(self.url, self.timeout)
+        self._record_handshake()
         deadline = time.time() + self.timeout
         while True:
             remaining = max(0.5, deadline - time.time())
@@ -362,6 +397,7 @@ class PusherClient:
                 return data or {}
             if name == "pusher:error":
                 message = str((data or {}).get("message", data))
+                self.last_error = message
                 if "not in this cluster" in message.lower():
                     raise PusherWrongCluster(message)
                 raise PusherError(message)
@@ -990,6 +1026,490 @@ def cmd_doctor(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# วินิจฉัย + ซ่อม config ของผู้ใช้ (โครงสร้างไฟล์อิสระ)
+# ---------------------------------------------------------------------------
+KEY_FIELD_ALIASES = {
+    "app_key": ("appkey", "pusherkey", "pusherappkey", "key", "appid"),
+    "cluster": ("cluster", "pushercluster", "wscluster", "clustername"),
+    "ws_url": ("wsurl", "wssurl", "websocketurl", "pusherurl", "wsendpoint", "endpoint"),
+    "host": ("wshost", "host", "hostname", "pusherhost"),
+}
+# ชื่อฟิลด์ที่ยอมรับตอนเขียนกลับ (จะสร้างให้ถ้าไม่มี)
+WRITE_FIELD_NAMES = {
+    "cluster": ("cluster", "pusherCluster", "wsCluster"),
+    "app_key": ("appKey", "app_key", "pusherKey", "key"),
+    "ws_url": ("wsUrl", "ws_url", "websocketUrl", "pusherUrl"),
+}
+
+HOSTS_FILES = (
+    Path(os.environ.get("WINDIR", r"C:\Windows")) / "System32" / "drivers" / "etc" / "hosts",
+    Path("/etc/hosts"),
+)
+
+
+def resolve_host(host: str, port: int = 443) -> list[str]:
+    """คืน IP ทั้งหมดที่ host นี้ resolve ได้ (เรียงตามที่ได้จากระบบ)"""
+    ips: list[str] = []
+    try:
+        infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return ips
+    for info in infos:
+        ip = info[4][0]
+        if ip not in ips:
+            ips.append(ip)
+    return ips
+
+
+def is_private_ip(ip: str) -> bool:
+    if ip.startswith(("127.", "10.", "192.168.", "169.254.", "::1", "fc", "fd", "fe80")):
+        return True
+    if ip.startswith("172."):
+        try:
+            second = int(ip.split(".")[1])
+            return 16 <= second <= 31
+        except (IndexError, ValueError):
+            return False
+    return False
+
+
+def hosts_file_hits(needle: str = "pusher") -> list[str]:
+    hits: list[str] = []
+    for path in HOSTS_FILES:
+        try:
+            if not path.is_file():
+                continue
+            for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+                stripped = line.split("#", 1)[0].strip()
+                if stripped and needle in stripped.lower():
+                    hits.append(f"{path}: {stripped}")
+        except OSError:
+            continue
+    return hits
+
+
+def proxy_env() -> dict:
+    out = {}
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+        for candidate in (name, name.lower()):
+            value = os.environ.get(candidate)
+            if value:
+                out[name] = value
+    return out
+
+
+def _norm(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", str(name).lower())
+
+
+def walk_config(obj, path: str = "", depth: int = 0):
+    """เดินดู JSON ทุกชั้น คืน (path, key, value)"""
+    if depth > 6:
+        return
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            here = f"{path}.{key}" if path else str(key)
+            if isinstance(value, (dict, list)):
+                yield from walk_config(value, here, depth + 1)
+            else:
+                yield here, str(key), value
+    elif isinstance(obj, list):
+        for index, value in enumerate(obj):
+            yield from walk_config(value, f"{path}[{index}]", depth + 1)
+
+
+def extract_pusher_settings(cfg: dict) -> dict:
+    """หาค่า pusher จาก config ที่โครงสร้างไม่รู้ล่วงหน้า"""
+    found: dict = {"paths": {}}
+    for path, key, value in walk_config(cfg):
+        if value in (None, "") or not isinstance(value, (str, int)):
+            continue
+        text = str(value).strip()
+        nkey = _norm(key)
+        if "ws_url" not in found and (text.startswith(("ws://", "wss://")) and "pusher" in text.lower()):
+            found["ws_url"], found["paths"]["ws_url"] = text, path
+            continue
+        if "app_key" not in found and nkey in KEY_FIELD_ALIASES["app_key"] and re.fullmatch(r"[0-9a-fA-F]{12,40}", text):
+            found["app_key"], found["paths"]["app_key"] = text, path
+            continue
+        if "cluster" not in found and nkey in KEY_FIELD_ALIASES["cluster"] and re.fullmatch(r"[a-z]{2,4}\d?", text.lower()):
+            found["cluster"], found["paths"]["cluster"] = text.lower(), path
+            continue
+        if "host" not in found and nkey in KEY_FIELD_ALIASES["host"] and "pusher" in text.lower():
+            found["host"], found["paths"]["host"] = text, path
+    return found
+
+
+def host_from_settings(settings: dict) -> str:
+    if settings.get("ws_url"):
+        return urllib.parse.urlparse(settings["ws_url"]).hostname or ""
+    if settings.get("host"):
+        return settings["host"]
+    if settings.get("cluster"):
+        return CLUSTER_HOSTS.get(settings["cluster"], f"ws-{settings['cluster']}.pusher.com")
+    return ""
+
+
+def _container_score(container: dict) -> int:
+    """ให้คะแนนว่า dict ก้อนนี้ดูเป็นที่เก็บค่า pusher แค่ไหน"""
+    score = 0
+    norm = {_norm(k): v for k, v in container.items()}
+    for field, aliases in KEY_FIELD_ALIASES.items():
+        for alias in aliases:
+            if alias not in norm:
+                continue
+            value = str(norm[alias]).strip()
+            if field == "app_key" and re.fullmatch(r"[0-9a-fA-F]{12,40}", value):
+                score += 3
+            elif field == "ws_url" and value.startswith(("ws://", "wss://")):
+                score += 3
+            elif field == "host" and "pusher" in value.lower():
+                score += 3
+            elif field == "cluster" and re.fullmatch(r"[a-z]{2,4}\d?", value.lower()):
+                score += 2
+    return score
+
+
+def patch_config_file(path: Path, values: dict, backup: bool = True) -> dict:
+    """แก้ค่าใน config.json โดยคงคีย์อื่นทั้งหมดไว้ (คืน dict สรุปการเปลี่ยนแปลง)"""
+    data = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(data, dict):
+        raise ValueError("config ต้องเป็น JSON object")
+
+    changes: dict = {}
+    containers = [v for _, _, v in walk_config(data) if isinstance(v, dict)]
+    containers.append(data)  # ตัวไฟล์เองเป็นตัวเลือกสุดท้าย
+
+    # เลือก container ที่คะแนนสูงสุด (ถ้าไม่มีเลยให้สร้าง/ใช้บล็อก "pusher")
+    scored = [(score, index, container) for index, container in enumerate(containers)
+              if (score := _container_score(container)) > 0]
+    if scored:
+        target = max(scored, key=lambda item: (item[0], item[1]))[2]
+    else:
+        target = data.setdefault("pusher", {})
+        if not isinstance(target, dict):
+            raise ValueError('คีย์ "pusher" ในไฟล์ไม่ใช่ object')
+
+    for field, value in values.items():
+        if not value:
+            continue
+        wanted = WRITE_FIELD_NAMES.get(field, ())
+        existing = next((k for k in target if _norm(k) in wanted), None)
+        if existing is None:
+            existing = {"cluster": "cluster", "app_key": "appKey", "ws_url": "wsUrl"}[field]
+        if str(target.get(existing, "")) != str(value):
+            changes[f"{existing}"] = {"old": target.get(existing), "new": value}
+        target[existing] = value
+
+    if changes:
+        if backup:
+            stamp_txt = time.strftime("%Y%m%d-%H%M%S")
+            backup_path = path.with_suffix(path.suffix + f".bak-{stamp_txt}")
+            backup_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
+            changes["_backup"] = str(backup_path)
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return changes
+
+
+def diagnose_verdict(
+    *,
+    configured_host: str,
+    configured_key: str,
+    live_key: str,
+    live_cluster: str,
+    handshake_ok: bool,
+    handshake_error: str,
+    resolved_ips: list[str],
+    hosts_hits: list[str],
+    proxies: dict,
+) -> tuple[str, list[str]]:
+    """คืน (สรุปผล, รายการที่ต้องแก้) — ฟังก์ชันบริสุทธิ์เพื่อทดสอบได้"""
+    fixes: list[str] = []
+
+    if hosts_hits:
+        fixes.append("มีบรรทัด pusher ใน hosts file → ต้องลบ (ทำให้ traffic วิ่งไปที่อื่น)")
+    if proxies:
+        fixes.append(f"มี proxy env ตั้งอยู่ ({', '.join(proxies)}) → ปิดก่อนทดสอบ")
+    if resolved_ips and all(is_private_ip(ip) for ip in resolved_ips):
+        fixes.append(f"DNS ของ {configured_host} ชี้ไป IP วงใน ({', '.join(resolved_ips)}) → ถูกดักจับ/แก้ DNS")
+    if configured_host and configured_host != "ws-us2.pusher.com":
+        fixes.append(f"host ที่ตั้งไว้คือ {configured_host} — ต้องเป็น ws-us2.pusher.com")
+    if live_key and configured_key and configured_key.lower() != live_key.lower():
+        fixes.append(f"app key ในไฟล์ ({mask(configured_key, 10)}) ไม่ตรงกับ key ที่ Kick ใช้ตอนนี้ ({mask(live_key, 10)})")
+    if live_cluster and live_cluster != "us2":
+        fixes.append(f"Kick ย้ายไป cluster {live_cluster} แล้ว — ใช้ค่านั้นแทน us2")
+
+    if handshake_ok:
+        return ("เชื่อมต่อ Pusher ได้แล้ว — cluster/key ถูกต้อง", fixes)
+
+    lowered = (handshake_error or "").lower()
+    if "not in this cluster" in lowered:
+        if configured_host and configured_host != "ws-us2.pusher.com":
+            summary = f"ต่อผิด cluster (host {configured_host}) — key ถูก แต่ host ไม่ใช่ us2"
+        elif live_key and configured_key and configured_key.lower() != live_key.lower():
+            summary = "key ใน config ไม่ใช่ key ที่ Kick ใช้อยู่ตอนนี้ (Kick หมุน key)"
+        else:
+            summary = (
+                "host ถูก (us2) และ key ตรงกับที่สาธารณะใช้ แต่ Pusher ยังปฏิเสธ "
+                "→ เป็นได้ 2 อย่าง: (ก) Kick หมุน key ล่าสุด (ข) เส้นทางเน็ตถูกเปลี่ยน cluster (proxy/VPN/hosts)"
+            )
+            if not fixes:
+                fixes.append("คัดลอก URL จริงจากเบราว์เซอร์ (Console snippet ในคู่มือ) แล้วรัน discover --ws-url")
+    elif "does not exist" in lowered:
+        summary = "app key ไม่ถูกต้องแล้ว (Kick เปลี่ยน key)"
+        fixes.append("ไปเอา key จริงจากหน้าเว็บ Kick ด้วย Console snippet")
+    else:
+        summary = f"เชื่อมต่อไม่สำเร็จ: {handshake_error or 'ไม่ทราบสาเหตุ'}"
+    return (summary, fixes)
+
+
+def cmd_fix_config(args) -> int:
+    path = Path(args.config_file).expanduser()
+    if not path.is_file():
+        fail(f"ไม่พบไฟล์: {path}")
+
+    print(f"=== วินิจฉัย config: {path} ===")
+    try:
+        raw = path.read_text(encoding="utf-8-sig")
+        cfg = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        fail(f"ไฟล์ไม่ใช่ JSON ที่อ่านได้: {exc}")
+
+    settings = extract_pusher_settings(cfg)
+    configured_host = host_from_settings(settings)
+    configured_key = str(settings.get("app_key") or "")
+    print(f"      host ในไฟล์   : {configured_host or '(ไม่พบ)'}"
+          + (f"   [จาก {settings['paths'].get('ws_url') or settings['paths'].get('cluster')}]" if configured_host else ""))
+    print(f"      app key ในไฟล์ : {mask(configured_key, 10) if configured_key else '(ไม่พบ)'}"
+          + (f"   [จาก {settings['paths'].get('app_key')}]" if configured_key else ""))
+    if settings.get("ws_url"):
+        print(f"      ws url ในไฟล์  : {settings['ws_url']}")
+
+    # 1) ตรวจ hosts file / proxy / DNS
+    print()
+    print("--- ตรวจสิ่งรอบข้าง ---")
+    hits = hosts_file_hits("pusher")
+    if hits:
+        warn("พบรายการ pusher ใน hosts file:")
+        for hit in hits:
+            print(f"      {hit}")
+    else:
+        ok("hosts file ไม่มีการแก้ไขที่เกี่ยวกับ pusher")
+
+    proxies = proxy_env()
+    if proxies:
+        warn("พบ proxy env: " + ", ".join(f"{k}={v}" for k, v in proxies.items()))
+    else:
+        ok("ไม่มี proxy env (HTTP_PROXY/HTTPS_PROXY/ALL_PROXY)")
+
+    for host in dict.fromkeys(h for h in (configured_host, "ws-us2.pusher.com") if h):
+        ips = resolve_host(host)
+        flag = "  <-- ผิดปกติ!" if ips and all(is_private_ip(ip) for ip in ips) else ""
+        print(f"      DNS {host:<22} -> {', '.join(ips) if ips else '(resolve ไม่ได้)'}{flag}")
+
+    # 2) หา key/cluster จริงจากเว็บ Kick (best-effort)
+    print()
+    print("--- หาค่าจริงจากเว็บ Kick (best-effort) ---")
+    live_key, live_cluster = "", ""
+    if args.ws_url:
+        cluster, key, _host = parse_ws_url(args.ws_url)
+        live_key, live_cluster = key, cluster or DEFAULT_CLUSTER
+        ok(f"ใช้ค่าที่คุณวางมา: cluster={live_cluster} key={mask(live_key, 12)}")
+    else:
+        cluster, key, source = discover_from_web(args.channel)
+        if key:
+            live_key, live_cluster = key, cluster or DEFAULT_CLUSTER
+            ok(f"เจอจาก {source}: cluster={live_cluster} key={mask(live_key, 12)}")
+        else:
+            warn("ดึงจากเว็บไม่เจอ (Cloudflare) — ใช้ snippet ในเบราว์เซอร์แล้วส่งมาทาง --ws-url")
+
+    # 3) ยิง handshake จริง
+    print()
+    print("--- ทดสอบเชื่อมต่อจริง ---")
+    test_key = configured_key or DEFAULT_APP_KEY
+    test_host = configured_host or "ws-us2.pusher.com"
+    url = settings.get("ws_url") or build_ws_url(settings.get("cluster") or DEFAULT_CLUSTER, test_key)
+    status, detail = probe_once(url, args.timeout)
+    print(f"      ลองต่อ {test_host} ด้วย key {mask(test_key, 10)} -> {status}: {detail}")
+    if args.compare:
+        compare_url = build_ws_url("eu", test_key)
+        c_status, c_detail = probe_once(compare_url, args.timeout)
+        print(f"      เทียบกับ ws-eu.pusher.com -> {c_status}: {c_detail}")
+        if status == "wrong-cluster" and c_status == "wrong-cluster":
+            print("      (ผลเหมือนกันทั้งสอง cluster = ปัญหาอยู่ที่ key/เส้นทาง ไม่ใช่แค่ตัว host)")
+
+    summary, fixes = diagnose_verdict(
+        configured_host=test_host,
+        configured_key=test_key,
+        live_key=live_key,
+        live_cluster=live_cluster,
+        handshake_ok=status == "ok",
+        handshake_error=detail,
+        resolved_ips=resolve_host(test_host),
+        hosts_hits=hits,
+        proxies=proxies,
+    )
+    print()
+    print(f">>> สรุป: {summary}")
+    if fixes:
+        print("    ต้องแก้ / ต้องตรวจ:")
+        for item in fixes:
+            print(f"      - {item}")
+
+    # 4) เสนอ/ลงมือแก้ config
+    target_key = live_key or DEFAULT_APP_KEY
+    target_cluster = live_cluster or DEFAULT_CLUSTER
+    target_url = build_ws_url(target_cluster, target_key)
+    values = {"cluster": target_cluster, "app_key": target_key, "ws_url": target_url}
+    print()
+    print("ค่าที่ควรเป็น:")
+    print(json.dumps(values, ensure_ascii=False, indent=2))
+
+    # ทดสอบค่าปลายทางจริง (ถ้าต่างจากที่ทดสอบไปแล้ว) เพื่อยืนยันว่าแก้แล้วจะใช้ได้
+    target_status = status
+    if target_url != url:
+        target_status, target_detail = probe_once(target_url, args.timeout)
+        print()
+        print(f"--- ทดสอบค่าที่ควรเป็น ---")
+        print(f"      ลองต่อ {host_from_settings(values) or target_cluster} ด้วย key {mask(target_key, 10)}"
+              f" -> {target_status}: {target_detail}")
+
+    if args.apply:
+        try:
+            changes = patch_config_file(path, values, backup=not args.no_backup)
+        except (OSError, ValueError) as exc:
+            fail(f"แก้ไฟล์ไม่สำเร็จ: {exc}")
+        if changes:
+            print()
+            ok("แก้ไฟล์เรียบร้อย:")
+            for field, change in changes.items():
+                if field == "_backup":
+                    print(f"      สำรองไว้ที่ : {change}")
+                else:
+                    print(f"      {field}: {mask(str(change['old']), 12)} -> {mask(str(change['new']), 12)}"
+                          if field == "appKey" else f"      {field}: {change['old']} -> {change['new']}")
+            print("      ทดสอบซ้ำด้วย:  python kick_chat.py listen --chatroom <id>")
+        else:
+            print()
+            ok("ไฟล์มีค่าถูกต้องอยู่แล้ว ไม่ต้องแก้")
+    else:
+        print()
+        info("ยังไม่แก้ไฟล์ — เพิ่ม --apply เพื่อให้แก้ให้ทันที (สำรอง .bak ไว้ให้)")
+
+    if target_status == "ok":
+        return 0
+    if status == "ok":
+        return 0
+    return 1
+
+
+# ---------------------------------------------------------------------------
+# คำสั่ง: scan — หาทุกที่ในเครื่องที่มีค่า pusher (หา "ตัวที่ override" ให้เจอ)
+# ---------------------------------------------------------------------------
+SCAN_EXTENSIONS = {
+    ".json", ".jsonc", ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".py", ".env",
+    ".yaml", ".yml", ".toml", ".ini", ".cfg", ".conf", ".txt", ".md", ".ps1", ".bat", ".sh",
+}
+SCAN_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist", "build", ".next"}
+
+SCAN_PATTERNS = (
+    ("ws-url", re.compile(r"wss?://[^\s\"'`,)]*pusher[^\s\"'`,)]*", re.I)),
+    ("pusher-host", re.compile(r"\bws-[a-z0-9]+\.pusher\.com\b", re.I)),
+    ("app-key", re.compile(r"(?:app_?key|pusher_?key|PUSHER_KEY)[\"'\s:=]+([0-9a-fA-F]{12,40})", re.I)),
+    ("hex-key", re.compile(r"\b([0-9a-f]{32})\b")),
+    ("cluster", re.compile(r"(?:cluster|PUSHER_CLUSTER)[\"'\s:=]+[\"']?([a-z]{2,4}\d?)", re.I)),
+)
+
+
+def scan_text_for_pusher(text: str) -> list[tuple[str, str]]:
+    """คืน [(ชนิด, ข้อความที่เจอ)] แบบไม่ซ้ำ"""
+    hits: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for kind, pattern in SCAN_PATTERNS:
+        for match in pattern.finditer(text):
+            value = (match.group(1) if match.groups() else match.group(0)).strip().strip("\"'` ")
+            label = {"app-key": "appKey", "hex-key": "key", "cluster": "cluster",
+                     "ws-url": "wsUrl", "pusher-host": "host"}[kind]
+            found = f"{label} = {value}"
+            key = (kind, value.lower())
+            if key in seen:
+                continue
+            seen.add(key)
+            hits.append((kind, found))
+    return hits
+
+
+def iter_scan_files(root: Path, exts: set[str], max_bytes: int = 2_000_000):
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in SCAN_SKIP_DIRS and not d.startswith(".")]
+        for filename in filenames:
+            path = Path(dirpath) / filename
+            if path.suffix.lower() not in exts and filename.lower() not in (".env", "procfile"):
+                continue
+            try:
+                if path.stat().st_size > max_bytes:
+                    continue
+            except OSError:
+                continue
+            yield path
+
+
+def cmd_scan(args) -> int:
+    root = Path(args.path).expanduser()
+    if not root.exists():
+        fail(f"ไม่พบ path: {root}")
+    exts = {e if e.startswith(".") else "." + e for e in (args.exts or "").split(",") if e} or SCAN_EXTENSIONS
+
+    print(f"=== สแกนหาค่า pusher ใน {root} ===")
+    files = 0
+    findings: list[tuple[str, int, str, str]] = []
+    for path in iter_scan_files(root, exts):
+        files += 1
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if "pusher" not in text.lower() and "32cbd69e4b950bf97679" not in text:
+            continue
+        for lineno, line in enumerate(text.splitlines(), 1):
+            for kind, found in scan_text_for_pusher(line):
+                findings.append((str(path), lineno, kind, found))
+
+    if not findings:
+        warn(f"สแกน {files} ไฟล์แล้วไม่พบค่า pusher เลย — ค่าอาจถูกตั้งจาก env หรือฝังในไฟล์ binary")
+        return 1
+
+    bad = 0
+    for path, lineno, kind, found in findings:
+        flag = ""
+        if kind in ("ws-url", "pusher-host"):
+            host = ""
+            m = re.search(r"ws-[a-z0-9]+\.pusher\.com", found, re.I)
+            if m:
+                host = m.group(0).lower()
+            if not m and "pusher" in found.lower():
+                # ws URL ที่ไม่มี host ตามรูปแบบ (เช่นผ่าน proxy) — ไม่ตัดสิน
+                pass
+            if host and host != "ws-us2.pusher.com":
+                flag = "   <-- ไม่ใช่ cluster ที่ Kick ใช้!"
+                bad += 1
+        if kind in ("app-key", "hex-key"):
+            key = found.split("=", 1)[-1].strip()
+            if key and key.lower() not in (DEFAULT_APP_KEY, *FALLBACK_APP_KEYS):
+                flag = "   <-- key นี้ไม่ใช่ key ล่าสุดที่ Kick ใช้?"
+                bad += 1
+        print(f"{path}:{lineno}: [{kind}] {found}{flag}")
+
+    print()
+    print(f"      สแกน {files} ไฟล์ พบ {len(findings)} จุด" + (f" (น่าสงสัย {bad})" if bad else " (ดูปกติ)"))
+    if bad:
+        print()
+        info("แก้ค่าที่ไม่ใช่ us2/" + DEFAULT_APP_KEY + " ให้เป็นค่าล่าสุด")
+        info("หรือใช้:  python kick_chat.py fix-config --config-file \"<ไฟล์ที่มีค่าเก่า>\" --apply")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
@@ -1002,10 +1522,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="kick_chat.py",
-        description="Kick chat (Pusher WebSocket) — ตรวจ cluster อัตโนมัติ, ฟังแชท, ส่งข้อความ",
+        description="Kick chat (Pusher WebSocket) — วินิจฉัย cluster, ซ่อม config, ฟังแชท, ส่งข้อความ",
         parents=[common],
     )
-    sub = parser.add_subparsers(dest="command", metavar="{probe,discover,resolve,listen,send,doctor}")
+    sub = parser.add_subparsers(dest="command", metavar="{probe,discover,resolve,listen,send,doctor,fix-config,scan}")
 
     p = sub.add_parser("probe", parents=[common], help="ทดสอบทุก cluster ว่าอันไหนใช้ได้")
     p.add_argument("--all", action="store_true", help="ทดสอบทุก cluster (ไม่หยุดที่ตัวแรก)")
@@ -1045,13 +1565,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tokens", help="ไฟล์ token (ค่าเริ่มต้น kick_tokens.json)")
     p.add_argument("--no-probe", action="store_true", help="ข้ามการทดสอบ cluster")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser(
+        "fix-config", parents=[common],
+        help="วินิจฉัย config.json ของคุณ (hosts file/proxy/DNS) แล้วซ่อมค่า pusher ให้",
+    )
+    p.add_argument("--config-file", dest="config_file", required=True, help="path ของ config.json ที่ต้องการตรวจ/ซ่อม")
+    p.add_argument("--channel", help="ชื่อช่อง (slug) สำหรับดึงค่าจริงจากเว็บ Kick")
+    p.add_argument("--apply", action="store_true", help="ลงมือแก้ไฟล์จริง (มีสำรอง .bak)")
+    p.add_argument("--no-backup", action="store_true", help="ไม่ต้องสำรองไฟล์ก่อนแก้")
+    p.add_argument("--no-compare", dest="compare", action="store_false", default=True,
+                   help="ไม่ต้องเทียบกับ ws-eu")
+    p.set_defaults(func=cmd_fix_config)
+
+    p = sub.add_parser("scan", parents=[common],
+                       help="สแกนหาทุกที่ในโฟลเดอร์ที่มีค่า pusher (URL/key/cluster)")
+    p.add_argument("--path", required=True, help="โฟลเดอร์ที่ต้องการสแกน เช่น D:\\HermesAI\\OBS")
+    p.add_argument("--exts", help="นามสกุลไฟล์ที่สนใจ คั่นด้วยจุลภาค (ค่าเริ่มต้น: รายการที่พบทั่วไป)")
+    p.set_defaults(func=cmd_scan)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     _fix_stdout()
     argv = list(sys.argv[1:] if argv is None else argv)
-    commands = {"probe", "discover", "resolve", "listen", "send", "doctor"}
+    commands = {"probe", "discover", "resolve", "listen", "send", "doctor", "fix-config", "scan"}
     if not argv or (argv[0].startswith("-") and argv[0] not in ("-h", "--help")):
         argv = ["doctor"] + argv
     parser = build_parser()

@@ -519,6 +519,286 @@ def main() -> int:
     print(f"\n{len(tests) - failed}/{len(tests)} passed")
     return 1 if failed else 0
 
+def test_extract_pusher_settings_shapes() -> None:
+    # โครงสร้างแบบที่ 1: nest ใต้ pusher
+    cfg1 = {"pusher": {"cluster": "us2", "appKey": GOOD_KEY,
+                       "wsUrl": f"wss://ws-us2.pusher.com/app/{GOOD_KEY}?protocol=7"}}
+    s1 = kc.extract_pusher_settings(cfg1)
+    assert s1["cluster"] == "us2"
+    assert s1["app_key"] == GOOD_KEY
+    assert s1["ws_url"].startswith("wss://ws-us2.pusher.com/app/")
+    assert kc.host_from_settings(s1) == "ws-us2.pusher.com"
+
+    # โครงสร้างแบบที่ 2: แบน + ชื่อฟิลด์ต่างออกไป
+    cfg2 = {"kick": {"chat": {"ws_host": "ws-eu.pusher.com", "app_key": BAD_KEY}}}
+    s2 = kc.extract_pusher_settings(cfg2)
+    assert s2["host"] == "ws-eu.pusher.com"
+    assert s2["app_key"] == BAD_KEY
+    assert kc.host_from_settings(s2) == "ws-eu.pusher.com"
+
+    # โครงสร้างแบบที่ 3: มีแต่ appId ที่ไม่ใช่ hex ยาว ๆ ต้องไม่ถูกจับเป็น key
+    s3 = kc.extract_pusher_settings({"appId": "123"})
+    assert "app_key" not in s3
+
+    # ไม่มีอะไรเลย
+    assert "cluster" not in kc.extract_pusher_settings({"other": 1})
+
+
+def test_patch_config_file_keeps_other_keys() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "config.json"
+        path.write_text(json.dumps({
+            "obs": {"scene": "main"},
+            "pusher": {"cluster": "eu", "appKey": BAD_KEY, "wsUrl": "wss://ws-eu.pusher.com/app/x?protocol=7"},
+            "other": [1, 2, 3],
+        }, indent=2), encoding="utf-8")
+
+        changes = kc.patch_config_file(path, {
+            "cluster": "us2", "app_key": GOOD_KEY,
+            "ws_url": f"wss://ws-us2.pusher.com/app/{GOOD_KEY}?protocol=7",
+        })
+        assert "appKey" in changes and "cluster" in changes
+        assert any(str(k).startswith("_backup") for k in changes) or "_backup" in changes
+
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["obs"] == {"scene": "main"}          # ข้อมูลอื่นต้องไม่หาย
+        assert data["other"] == [1, 2, 3]
+        assert data["pusher"]["cluster"] == "us2"
+        assert data["pusher"]["appKey"] == GOOD_KEY
+        assert "ws-us2" in data["pusher"]["wsUrl"]
+
+        backups = list(Path(tmpdir).glob("*.bak-*"))
+        assert backups, "ต้องมีไฟล์สำรอง"
+        assert json.loads(backups[0].read_text(encoding="utf-8"))["pusher"]["cluster"] == "eu"
+
+        # รันซ้ำด้วยค่าเดิม → ไม่มีการเปลี่ยนแปลง
+        again = kc.patch_config_file(path, {
+            "cluster": "us2", "app_key": GOOD_KEY,
+            "ws_url": f"wss://ws-us2.pusher.com/app/{GOOD_KEY}?protocol=7",
+        })
+        assert again == {}
+
+
+def test_patch_config_creates_pusher_block() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "config.json"
+        path.write_text(json.dumps({"someOther": True}), encoding="utf-8")
+        kc.patch_config_file(path, {"cluster": "us2", "app_key": GOOD_KEY}, backup=False)
+        data = json.loads(path.read_text(encoding="utf-8"))
+        assert data["someOther"] is True
+        assert data["pusher"]["cluster"] == "us2"
+
+
+def test_hosts_and_proxy_helpers() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        hosts = Path(tmpdir) / "hosts"
+        hosts.write_text(
+            "# comment\n"
+            "127.0.0.1  localhost\n"
+            "10.0.0.9   ws-us2.pusher.com   # แก้โดยโปรแกรมอะไรสักอย่าง\n",
+            encoding="utf-8",
+        )
+        original = kc.HOSTS_FILES
+        kc.HOSTS_FILES = (hosts,)
+        try:
+            hits = kc.hosts_file_hits("pusher")
+            assert len(hits) == 1 and "ws-us2.pusher.com" in hits[0]
+        finally:
+            kc.HOSTS_FILES = original
+
+        import os
+
+        saved = {k: os.environ.get(k) for k in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY")}
+        try:
+            os.environ["HTTPS_PROXY"] = "http://127.0.0.1:8888"
+            assert kc.proxy_env().get("HTTPS_PROXY") == "http://127.0.0.1:8888"
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            os.environ.pop("http_proxy", None)
+            os.environ.pop("https_proxy", None)
+
+
+def test_ip_classification() -> None:
+    assert kc.is_private_ip("127.0.0.1")
+    assert kc.is_private_ip("192.168.1.10")
+    assert kc.is_private_ip("10.5.5.5")
+    assert kc.is_private_ip("172.20.0.1")
+    assert not kc.is_private_ip("18.140.1.1")
+    assert not kc.is_private_ip("172.40.1.1")
+
+
+def test_diagnose_verdict_all_branches() -> None:
+    base = dict(configured_host="ws-us2.pusher.com", configured_key=GOOD_KEY, live_key=GOOD_KEY,
+                live_cluster="us2", resolved_ips=["18.1.1.1"], hosts_hits=[], proxies={})
+
+    summary, fixes = kc.diagnose_verdict(**base, handshake_ok=True, handshake_error="")
+    assert "เชื่อมต่อ Pusher ได้แล้ว" in summary and fixes == []
+
+    summary, fixes = kc.diagnose_verdict(**{**base, "configured_host": "ws-eu.pusher.com"},
+                                         handshake_ok=False, handshake_error="App key X not in this cluster")
+    assert "ต่อผิด cluster" in summary
+    assert any("ws-us2.pusher.com" in f for f in fixes)
+
+    summary, fixes = kc.diagnose_verdict(**{**base, "configured_key": BAD_KEY},
+                                         handshake_ok=False, handshake_error="App key X not in this cluster")
+    assert "ไม่ใช่ key ที่ Kick ใช้" in summary
+    assert any("ไม่ตรงกับ key" in f for f in fixes)
+
+    summary, fixes = kc.diagnose_verdict(**base, handshake_ok=False,
+                                         handshake_error="App key X not in this cluster")
+    assert "Kick หมุน key ล่าสุด" in summary
+    assert fixes and "discover --ws-url" in fixes[0]
+
+    summary, _ = kc.diagnose_verdict(**base, handshake_ok=False,
+                                     handshake_error="Application does not exist")
+    assert "ไม่ถูกต้องแล้ว" in summary
+
+    summary, fixes = kc.diagnose_verdict(**{**base, "hosts_hits": ["C:/hosts: 10.0.0.9 ws-us2.pusher.com"],
+                                            "proxies": {"HTTPS_PROXY": "x"},
+                                            "resolved_ips": ["127.0.0.1"]},
+                                         handshake_ok=False, handshake_error="หมดเวลาเชื่อมต่อ")
+    assert any("hosts" in f for f in fixes)
+    assert any("proxy env" in f for f in fixes)
+    assert any("วงใน" in f for f in fixes)
+
+
+def test_cmd_fix_config_applies(monkeypatch=None) -> None:
+    import tempfile
+
+    server = MockPusherServer()
+    server.start()
+    try:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            cfg_path = Path(tmpdir) / "config.json"
+            cfg_path.write_text(json.dumps({
+                "obs": {"scene": "keep-me"},
+                "pusher": {"cluster": "eu", "appKey": BAD_KEY},
+            }), encoding="utf-8")
+
+            original_build = kc.build_ws_url
+            kc.build_ws_url = lambda cluster, key=kc.DEFAULT_APP_KEY: (
+                f"ws://127.0.0.1:{server.port}/app/{key}?protocol=7"
+            )
+            original_hosts = kc.HOSTS_FILES
+            kc.HOSTS_FILES = (Path(tmpdir) / "no-such-hosts",)
+            try:
+                args = argparse.Namespace(
+                    config=str(Path(tmpdir) / "chat_cfg.json"), config_file=str(cfg_path),
+                    channel=None, ws_url=f"ws://127.0.0.1/app/{GOOD_KEY}?protocol=7",
+                    apply=True, no_backup=False, compare=False, timeout=3.0,
+                    app_key=None, clusters=None, all=False,
+                )
+                out, err = io.StringIO(), io.StringIO()
+                from contextlib import redirect_stderr
+
+                with redirect_stdout(out), redirect_stderr(err):
+                    rc = kc.cmd_fix_config(args)
+                combined = out.getvalue() + err.getvalue()
+                assert rc == 0, combined
+                assert "สรุป" in combined
+
+                data = json.loads(cfg_path.read_text(encoding="utf-8"))
+                assert data["obs"] == {"scene": "keep-me"}
+                assert data["pusher"]["appKey"] == GOOD_KEY
+                assert data["pusher"]["cluster"] == "us2"
+                assert "127.0.0.1" in data["pusher"]["wsUrl"] or "us2" in data["pusher"]["wsUrl"]
+                assert list(Path(tmpdir).glob("*.bak-*")), "ต้องมีไฟล์สำรอง"
+            finally:
+                kc.build_ws_url = original_build
+                kc.HOSTS_FILES = original_hosts
+    finally:
+        server.stop()
+
+
+def test_handshake_metadata_captured() -> None:
+    server = MockPusherServer()
+    server.start()
+    try:
+        url = f"ws://127.0.0.1:{server.port}/app/{GOOD_KEY}?protocol=7"
+        client = kc.PusherClient(url, timeout=5.0)
+        client.connect()
+        assert client.handshake["host"] == "127.0.0.1"
+        assert "101" in client.handshake["status"]
+        assert any(k.lower() == "upgrade" for k in client.handshake["headers"])
+        assert client.handshake["ips"], "ต้องบันทึก IP ที่ resolve ได้"
+        client.close()
+
+        bad = kc.PusherClient(f"ws://127.0.0.1:{server.port}/app/{BAD_KEY}?protocol=7", timeout=5.0)
+        try:
+            bad.connect()
+        except kc.PusherWrongCluster:
+            pass
+        assert bad.last_error and "not in this cluster" in bad.last_error
+        bad.close()
+    finally:
+        server.stop()
+
+
+def test_scan_finds_and_flags_values() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "sub").mkdir()
+        (root / "config.json").write_text(json.dumps({
+            "pusher": {"cluster": "eu", "appKey": BAD_KEY,
+                       "wsUrl": f"wss://ws-eu.pusher.com/app/{BAD_KEY}?protocol=7"},
+        }), encoding="utf-8")
+        (root / "sub" / "app.py").write_text(
+            f'PUSHER_URL = "wss://ws-us2.pusher.com/app/{GOOD_KEY}?protocol=7"\n', encoding="utf-8")
+        (root / "node_modules").mkdir()
+        (root / "node_modules" / "junk.js").write_text("wss://ws-ap1.pusher.com/app/" + BAD_KEY,
+                                                       encoding="utf-8")
+        (root / "binary.exe").write_bytes(b"\x00\x01pusher ws-eu.pusher.com")
+
+        args = argparse.Namespace(path=tmpdir, exts=None, config=None, app_key=None, clusters=None,
+                                 timeout=1.0, all=False, ws_url=None)
+        out, err = io.StringIO(), io.StringIO()
+        from contextlib import redirect_stderr
+
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = kc.cmd_scan(args)
+        text = out.getvalue()
+        assert rc == 0
+        assert "config.json:" in text and "ไม่ใช่ cluster ที่ Kick ใช้" in text
+        assert "sub/app.py" in text and "ws-us2.pusher.com" in text
+        assert "node_modules" not in text, "ต้องข้าม node_modules"
+        assert "binary.exe" not in text, "ต้องข้ามไฟล์นามสกุลที่ไม่สนใจ"
+
+
+def test_scan_reports_when_nothing_found() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / "readme.md").write_text("nothing here about chat", encoding="utf-8")
+        args = argparse.Namespace(path=tmpdir, exts=None, config=None, app_key=None, clusters=None,
+                                  timeout=1.0, all=False, ws_url=None)
+        out, err = io.StringIO(), io.StringIO()
+        from contextlib import redirect_stderr
+
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = kc.cmd_scan(args)
+        assert rc == 1
+        assert "ไม่พบค่า pusher" in err.getvalue()
+
+
+def test_scan_text_for_pusher_dedupes() -> None:
+    text = f"wss://ws-us2.pusher.com/app/{GOOD_KEY}?protocol=7\nwss://ws-us2.pusher.com/app/{GOOD_KEY}?protocol=7"
+    hits = kc.scan_text_for_pusher(text)
+    urls = [h for h in hits if h[0] == "ws-url"]
+    assert len(urls) == 1, hits
+    assert hits[0][1].startswith("wsUrl = ")
+
 
 if __name__ == "__main__":
     raise SystemExit(main())

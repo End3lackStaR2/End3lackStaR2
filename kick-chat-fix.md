@@ -13,6 +13,7 @@
 | ลอง `ws-eu` / `ws-ap1` / `ws-us-east-1` ดีไหม | **แย่ลง** — สามตัวนี้ไม่ใช่ cluster ของ Kick จึงได้ error เดียวกันแน่นอน (`ws-us-east-1` ยังไม่ใช่ชื่อ cluster ของ Pusher ด้วยซ้ำ) |
 | App key มาจาก Kick Developer Portal ไหม | **ไม่** — portal ให้แค่ OAuth `client_id` / `client_secret` ส่วน key นี้เป็น Pusher key สาธารณะที่ฝังอยู่ในหน้าเว็บ Kick (ใครก็เห็นได้ ไม่ใช่ความลับ) |
 | ต้องแก้ตรงไหน | host/cluster ใน `config.json` ให้เป็น `us2` เท่านั้น (2 บรรทัด) แล้วรัน `kick_chat.py probe` เพื่อยืนยัน |
+| ถ้า host เป็น `us2` แล้วยัง error | ดูข้อ **3.5** — hosts file / proxy / DNS ถูกดัก / key ถูกหมุน / process เก่ายังไม่รีสตาร์ท (ใช้ `fix-config` + `scan`) |
 | ถ้าอนาคต Kick เปลี่ยน key | รัน `python kick_chat.py probe` — สคริปต์จะไล่ทดสอบทุก cluster ให้เอง (หรือวาง URL จาก DevTools ผ่าน `discover --ws-url`) |
 
 > **สรุปสาเหตุ:** ไม่ใช่ "token/credentials ผิด" และไม่ใช่ "app key ผิด" — เป็นเพราะปลายทาง WebSocket ที่ต่ออยู่ไม่ใช่ `ws-us2.pusher.com` ครับ
@@ -107,6 +108,84 @@ cd /d "D:\HermesAI\OBS\files"
 | เชื่อมต่อไม่ขึ้นเลย | ไฟร์วอลล์/เน็ตบล็อก wss 443 → ทดสอบด้วย `curl -I https://ws-us2.pusher.com` |
 
 > ถ้าคุณส่ง `config.json` มาให้ผม ผมแก้ให้ตรงจุดได้ทันที (ผมเข้าถึงไดรฟ์ `D:` ของเครื่องคุณไม่ได้)
+
+---
+
+## 3.5) ⚠️ host เป็น `ws-us2.pusher.com` แล้ว "ยัง" ได้ error เดียวกัน
+
+ถ้า host ถูกและ key ถูก ตามทฤษฎีจะ **ต้อง** ต่อได้ — ถ้ายังไม่ได้ แปลว่ามีอย่างใดอย่างหนึ่งใน 6 ข้อนี้ ให้รันคำสั่งเดียวเพื่อเช็คทั้งหมด:
+
+```cmd
+cd /d "D:\HermesAI\OBS\files"
+"C:\Users\mail3\AppData\Local\Programs\Python\Python312\python.exe" kick_chat.py fix-config ^
+  --config-file "D:\HermesAI\OBS\files\config.json"
+```
+
+`fix-config` จะตรวจ + แสดงผลทีละข้อ แล้วเสนอค่าที่ถูกต้อง (ยังไม่แก้ไฟล์จนกว่าจะใส่ `--apply`):
+
+| อาการที่สคริปต์เช็คให้ | ทำไมทำให้ "ต่อผิด cluster" |
+| --- | --- |
+| บรรทัด `pusher` ใน `C:\Windows\System32\drivers\etc\hosts` | traffic ถูกส่งไปที่เครื่อง/IP อื่น → ไม่ได้คุยกับ cluster จริง |
+| `HTTPS_PROXY` / `ALL_PROXY` ใน environment | WebSocket วิ่งผ่าน proxy ที่ไปเข้า Pusher cluster อื่น |
+| DNS ของ `ws-us2.pusher.com` ชี้ IP วงใน (127./10./192.168./169.254.) | DNS ถูกแก้ (VPN/โปรแกรมดักจับ) |
+| key ใน config ≠ key ที่ Kick ใช้ตอนนี้ | Kick หมุน key (เกิดเป็นครั้งคราว) |
+| ค่าอื่นในไฟล์ (เช่น `host` ชนะ `wsUrl`) | โปรแกรมของคุณอาจใช้ฟิลด์คนละตัวกับที่คุณแก้ |
+| แก้แล้วยังไม่ restart process | process เก่ายังถือค่าเดิม/URL เดิมอยู่ |
+
+ตัวอย่างผลลัพธ์เมื่อพบปัญหา:
+
+```
+--- ตรวจสิ่งรอบข้าง ---
+[!]   พบรายการ pusher ใน hosts file:
+      C:\Windows\System32\drivers\etc\hosts: 10.0.0.9 ws-us2.pusher.com
+[!]   พบ proxy env: HTTPS_PROXY=http://127.0.0.1:8888
+      DNS ws-us2.pusher.com      -> 10.0.0.9  <-- ผิดปกติ!
+
+>>> สรุป: ต่อผิด cluster (host ws-us2.pusher.com) — key ถูก แต่ host ไม่ใช่ us2
+    ต้องแก้ / ต้องตรวจ:
+      - มีบรรทัด pusher ใน hosts file → ต้องลบ (ทำให้ traffic วิ่งไปที่อื่น)
+      - มี proxy env ตั้งอยู่ (HTTPS_PROXY) → ปิดก่อนทดสอบ
+      - DNS ของ ws-us2.pusher.com ชี้ไป IP วงใน (10.0.0.9) → ถูกดักจับ/แก้ DNS
+```
+
+**วิธีแก้ hosts file (ถ้าพบ):** เปิด Notepad **as Administrator** → ไฟล์ `C:\Windows\System32\drivers\etc\hosts` → ลบบรรทัดที่มี `pusher` → `ipconfig /flushdns`
+
+**หา "ทุกที่" ที่มีการตั้งค่า pusher ในเครื่อง** (บางโปรเจกต์มีหลายไฟล์/ค่า hardcode ทับกัน — ตัวนี้คือตัวที่ทำให้คุณแก้ config.json แล้วไม่เปลี่ยนพฤติกรรม):
+
+```cmd
+"...\python.exe" kick_chat.py scan --path "D:\HermesAI\OBS"
+```
+
+```
+D:\HermesAI\OBS\config.json:5: [ws-url] wsUrl = wss://ws-eu.pusher.com/app/ffff...?protocol=7   <-- ไม่ใช่ cluster ที่ Kick ใช้!
+D:\HermesAI\OBS\src\chat.py:12: [app-key] appKey = 34bf7a0ff419a2a775b9   <-- key นี้ไม่ใช่ key ล่าสุดที่ Kick ใช้?
+D:\HermesAI\OBS\config.json:9: [pusher-host] host = ws-us2.pusher.com
+```
+
+**ซ่อมทั้งไฟล์ให้เลย** (สำรอง `.bak-<วันเวลา>` ให้อัตโนมัติ และคงคีย์อื่นในไฟล์ไว้ครบ):
+
+```cmd
+"...\python.exe" kick_chat.py fix-config --config-file "D:\HermesAI\OBS\files\config.json" --apply
+```
+
+---
+
+### วิธี "ผู้เชี่ยวชาญ" หา cluster จริงใน 10 วินาที (ไม่ต้องเดา)
+
+เปิด <https://kick.com/> (หรือหน้าช่องคุณ) → กด **F12** → แท็บ **Console** → วางบรรทัดนี้:
+
+```js
+copy(performance.getEntriesByType('resource').filter(r=>/pusher/i.test(r.name)).map(r=>r.name).join('\n') || 'ไม่พบ — ดูแท็บ Network แทน')
+```
+
+มันจะคัดลอก URL ที่เบราว์เซอร์ใช้จริงลงคลิปบอร์ด (เช่น `wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&...`) →
+เอามาวางในคำสั่งนี้ แล้วสคริปต์จะทดสอบ + แก้ config ให้ตรงกับความจริงทันที:
+
+```cmd
+"...\python.exe" kick_chat.py discover --ws-url "wss://...ที่คัดลอกมา..."
+```
+
+> **หมายเหตุ:** ผม (ผู้ช่วย) รัน `probe` แทนคุณไม่ได้ เพราะสภาพแวดล้อมที่ผมรันอยู่ต่อ `pusher.com`/`kick.com` ไม่ได้ (ทดสอบแล้ว: DNS resolve ได้ แต่ TCP/TLS ถูกบล็อก) — คำสั่ง `fix-config`/`probe`/`scan` ถูกออกแบบมาให้รันบนเครื่องคุณแล้วรายงานผลเหมือนที่ผมจะทำ
 
 ---
 
@@ -243,8 +322,10 @@ taskkill /IM python.exe /F
 | คำสั่ง | ทำอะไร |
 | --- | --- |
 | `kick_chat.py probe` | ไล่ทดสอบทุก cluster + บันทึก cluster ที่ใช้ได้ลง config |
+| `kick_chat.py fix-config --config-file "<ไฟล์>" [--apply]` | วินิจฉัย hosts/proxy/DNS/key แล้วซ่อม config ให้ (สำรอง .bak) |
+| `kick_chat.py scan --path "<โฟลเดอร์>"` | หาทุกไฟล์ในเครื่องที่มีค่า pusher เพื่อจับตัวที่ override |
 | `kick_chat.py doctor` | ตรวจ config/token/cluster ทั้งหมด (ค่าเริ่มต้นเมื่อไม่ใส่คำสั่ง) |
-| `kick_chat.py discover --ws-url "..."` | รับ URL จาก DevTools แล้วแยก cluster/key + ทดสอบให้ |
+| `kick_chat.py discover --ws-url "..."` | รับ URL จาก DevTools/Console แล้วแยก cluster/key + ทดสอบให้ |
 | `kick_chat.py resolve --channel <slug>` | หา channel_id / chatroom_id / broadcaster_user_id |
 | `kick_chat.py listen --chatroom <id> [--json]` | ฟังแชทสด (keepalive + reconnect อัตโนมัติ) |
 | `kick_chat.py send --channel <slug> --message "..."` | ส่งข้อความผ่าน API ทางการ (ต้องมี scope `chat:write`) |
