@@ -1028,5 +1028,55 @@ def test_key_verdict_levels() -> None:
     assert level == "unknown" and "client_id" in note
 
 
+def test_scan_catches_bare_key_assignment_and_excludes() -> None:
+    """key ที่เขียนสั้น ๆ ว่า KEY = "..." ต้องถูกจับ และ --exclude ต้องข้ามไฟล์ที่บอก"""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "boot.py").write_text(f'KEY = "{RETIRED_KEY}"\n', encoding="utf-8")
+        (root / "report.txt").write_text(f"appKey = {RETIRED_KEY}\n", encoding="utf-8")
+
+        # ไม่มี --exclude → เจอทั้งสองไฟล์
+        args = argparse.Namespace(path=tmpdir, exts=None, config=None, app_key=None, clusters=None,
+                                  timeout=1.0, all=False, ws_url=None, exclude=None)
+        out, err = io.StringIO(), io.StringIO()
+        from contextlib import redirect_stderr
+
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = kc.cmd_scan(args)
+        text = out.getvalue()
+        assert rc == 1
+        assert "boot.py" in text and "report.txt" in text
+
+        # --exclude report.txt → ไม่สแกนไฟล์นั้น
+        args.exclude = "report.txt"
+        out2, err2 = io.StringIO(), io.StringIO()
+        with redirect_stdout(out2), redirect_stderr(err2):
+            rc2 = kc.cmd_scan(args)
+        text2 = out2.getvalue()
+        assert rc2 == 1, text2
+        assert "boot.py" in text2 and "report.txt" not in text2
+
+
+def test_scan_skips_its_own_report_files() -> None:
+    """ไฟล์รายงานที่เครื่องมือเราเขียนเอง (kick_report_*.txt) ต้องไม่ถูกสแกน"""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "kick_report_20261014-120000.txt").write_text(f"appKey = {RETIRED_KEY}\n", encoding="utf-8")
+        (root / "config.json").write_text(json.dumps({"appKey": GOOD_KEY}), encoding="utf-8")
+        args = argparse.Namespace(path=tmpdir, exts=None, config=None, app_key=None, clusters=None,
+                                  timeout=1.0, all=False, ws_url=None, exclude=None)
+        out, err = io.StringIO(), io.StringIO()
+        from contextlib import redirect_stderr
+
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = kc.cmd_scan(args)
+        assert rc == 0, out.getvalue()
+        assert "kick_report_" not in out.getvalue()
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -208,5 +208,53 @@ def main() -> int:
     return 1 if failures else 0
 
 
+def test_decode_bytes_handles_windows_encodings() -> None:
+    """log บน Windows อาจเป็น UTF-16 (PowerShell) หรือ cp1252 (open() เปล่า ๆ)"""
+    body = f"[20:00:02] ต่อ wss://ws-us2.pusher.com/app/{CURRENT}\r\n" \
+           "[20:00:03] Frame event=pusher:connection_established data={\"socket_id\":\"1.2\"}\r\n"
+
+    assert "pusher:connection_established" in ccl.decode_bytes(body.encode("utf-16"))
+    assert "pusher:connection_established" in ccl.decode_bytes(body.encode("utf-8-sig"))
+    assert "pusher:connection_established" in ccl.decode_bytes(body.encode("utf-8"))
+    # cp1252 เขียนThaiไม่ได้ครบ แต่ต้องไม่พังและยังจับ key ได้
+    legacy = ccl.decode_bytes(f"[20:00:02] key={RETIRED}\r\n".encode("cp1252"))
+    assert RETIRED in legacy
+    assert ccl.decode_bytes(b"") == "" or ccl.decode_bytes(b"") == ""
+
+
+def test_read_tail_on_real_files(tmp_path=None) -> None:
+    with tempfile.TemporaryDirectory() as tmpname:
+        tmp = Path(tmpname)
+        utf16 = tmp / "utf16.log"
+        utf16.write_bytes(
+            f"[20:00:03] Frame event=pusher:connection_established data={{\"socket_id\":\"9.9\"}}\r\n"
+            .encode("utf-16"))
+        info = ccl.analyze(ccl.read_tail(utf16), expect_key=CURRENT)
+        assert info["established"] and info["socket_id"] == "9.9"
+
+        empty = tmp / "empty.log"
+        empty.write_bytes(b"")
+        assert ccl.read_tail(empty) == ""
+
+
+def test_old_key_in_log_without_refusal() -> None:
+    """log ที่ยังพิมพ์ URL ด้วย key เก่า (ไม่มีบรรทัด 4001) ต้องถูกจับเป็น 'ใช้ค่าเก่า'"""
+    text = f"[20:00:01] ต่อ wss://ws-us2.pusher.com/app/{RETIRED}?protocol=7\r\n[20:00:02] กำลังเชื่อมต่อ...\r\n"
+    info = ccl.analyze(text, expect_key=CURRENT)
+    assert info["retired_in_log"] == [RETIRED]
+    assert info["established"] is False and info["refused"] is False
+    status, detail, code = ccl.verdict_for(info, CURRENT, stale_minutes=None)
+    assert status == "old_key" and code == 3, (status, detail, code)
+    assert "ใช้ค่าเก่า" in detail
+
+
+def test_cli_old_key_verdict_exit_code() -> None:
+    with tempfile.TemporaryDirectory() as tmpname:
+        path = Path(tmpname) / "notifier.log"
+        path.write_text(f"[20:00:01] ws://ws-us2.pusher.com/app/{RETIRED}\n", encoding="utf-8")
+        code, text = _run([str(path), "--stale-minutes", "0"])
+        assert code == 3, text
+        assert "key เก่าที่ Kick ปิดแล้ว" in text
+
 if __name__ == "__main__":
     raise SystemExit(main())

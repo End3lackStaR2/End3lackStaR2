@@ -107,14 +107,33 @@ def analyze(text: str, expect_key: str = "") -> dict:
     return result
 
 
+def decode_bytes(raw: bytes) -> str:
+    """ถอดรหัสไฟล์ log ให้ทนทุกแบบที่เจอบน Windows
+
+    ลำดับ: BOM UTF-16/UTF-8 -> เดา UTF-16 (มี NUL ถี่ ๆ) -> UTF-8 -> cp1252
+    ไฟล์ log ที่โปรแกรมเขียนด้วย open() เปล่า ๆ บน Windows มักเป็น cp1252 ไม่ใช่ UTF-8
+    """
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        return raw.decode("utf-16", "replace")
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw.decode("utf-8-sig", "replace")
+    sample = raw[:400]
+    if sample.count(b"\x00") > len(sample) // 4:
+        return raw.decode("utf-16", "replace")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("cp1252", "replace")
+
+
 def read_tail(path: Path, max_bytes: int = 400_000) -> str:
-    """อ่านท้ายไฟล์ (ไม่โหลดทั้งไฟล์ถ้าใหญ่)"""
+    """อ่านท้ายไฟล์ (ไม่โหลดทั้งไฟล์ถ้าใหญ่) แล้วถอดรหัสให้อัตโนมัติ"""
     size = path.stat().st_size
     with path.open("rb") as handle:
         if size > max_bytes:
             handle.seek(size - max_bytes)
             handle.readline()  # ตัดบรรทัดแรกที่อาจไม่ครบ
-        return handle.read().decode("utf-8", "replace")
+        return decode_bytes(handle.read())
 
 
 def follow(path: Path, seconds: float, poll: float = 0.5):
@@ -137,6 +156,10 @@ def verdict_for(info: dict, expect_key: str, stale_minutes: float | None) -> tup
     """คืน (สถานะสั้น, คำอธิบาย, รหัสออก)"""
     if info["established"] and not info["refused"]:
         return "connected", "log มี pusher:connection_established — ต่อติดแล้ว", 0
+    if info["retired_in_log"] and not info["refused"]:
+        keys = ", ".join(info["retired_in_log"])
+        return ("old_key", f"log ยังแสดง key เก่าที่ Kick ปิดแล้ว ({keys}) — "
+                           "ตัวที่รันอยู่ใช้ค่าเก่า ให้ปิดแล้วเริ่มใหม่ 1 ตัว (และแก้ทุกไฟล์ที่ยังมี key นี้)", 3)
     if info["refused"]:
         seen = ", ".join(info["keys_seen"]) or "(อ่าน key ไม่ได้)"
         if any(key.lower() in wp.RETIRED_KEYS for key in info["keys_seen"]):
@@ -238,7 +261,8 @@ def main(argv: list[str] | None = None) -> int:
     status, detail, code = verdict_for(info, args.expect_key, stale)
 
     marks = {
-        "connected": "✅", "refused": "❌", "stale": "⚠️ ", "transport": "⚠️ ", "unknown": "❓",
+        "connected": "✅", "refused": "❌", "old_key": "❌", "stale": "⚠️ ",
+        "transport": "⚠️ ", "unknown": "❓",
     }
     print(f"ผลตรวจหลัก:")
     print(f"  {marks.get(status, '•')} {detail}")
@@ -266,7 +290,7 @@ def main(argv: list[str] | None = None) -> int:
     print()
     if status == "connected":
         print("ขั้นต่อไป: เปิด OBS/ไฟล์เสียงทดสอบ แล้วลองให้มีคนแชท หรือพิมพ์ทดสอบ")
-    elif status == "refused":
+    elif status in ("refused", "old_key"):
         print("ขั้นต่อไป:")
         print("  1) ปิดทุก process เก่า:  tasklist | findstr /i python   แล้ว  taskkill /IM python.exe /F")
         print("  2) ยืนยันค่าใหม่ด้วย:    python ws_probe.py --discover")

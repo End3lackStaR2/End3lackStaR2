@@ -5,6 +5,7 @@ Config files for my GitHub profile.
 ## เครื่องมือในโปรเจกต์นี้
 
 - **[kick-chat-fix.md](kick-chat-fix.md)** — คู่มือหลัก: **สาเหตุยืนยันแล้ว** — Kick ปิด Pusher app ตัวเก่า (`32cbd69e4b950bf97679`) ต้นเดือน ต.ค. 2026 ทำให้ได้ error `4001 App key ... not in this cluster`; key ปัจจุบันคือ `34bf7a0ff419a2a775b9` (cluster us2) และ Kick มี endpoint ให้ถามได้เสมอว่าใช้ app ไหน
+- **[tools/run_and_report.py](tools/run_and_report.py)** + **[tools/RUN-ME-report.cmd](tools/RUN-ME-report.cmd)** — รันตรวจทั้งชุดแล้วรวมผลเป็นไฟล์เดียว (บน Windows ดับเบิลคลิก `.cmd` ได้เลย)
 - **[tools/check_connection_log.py](tools/check_connection_log.py)** — อ่าน log ของโปรแกรมแจ้งเตือนของคุณ แล้วบอกว่าต่อติด (`connection_established`) / ยังถูกปฏิเสธ / key เก่า / เน็ตมีปัญหา
 - **[tools/github-actions-kick-probe.yml](tools/github-actions-kick-probe.yml)** — template workflow ให้ GitHub รัน probe จากเครือข่ายที่สอง (ลิงก์คลิกเดียวอยู่ที่ `tools/actions-setup-link.txt`)
 - **[tools/pusher_sweep.py](tools/pusher_sweep.py)** — ยิงทดสอบทุก cluster × ทุก key พร้อมกัน (`--discover` = ถาม Kick ก่อน, `--json` = เก็บผล)
@@ -14,7 +15,7 @@ Config files for my GitHub profile.
 - **[kick_events.py](kick_events.py)** — Events API ทางการ (webhook): `setup` / `serve` (+overlay โปร่งใสสำหรับ OBS ผ่าน SSE) / `subscribe` / `list` / `delete` / `status` / `verify` (ตรวจลายเซ็น RSA ด้วย stdlib)
 - **[kick-setup.md](kick-setup.md)** — ตั้งค่า Kick Client ID / Secret + OAuth 2.1 (PKCE) บน Windows
 - **[kick_oauth.py](kick_oauth.py)** — CLI OAuth: `setup` / `login` / `check` / `refresh` / `revoke`
-- **`tests/`** — เทสต์ออฟไลน์ 84 เคส + เทสต์หน้าเว็บ 2 ไฟล์ รันทั้งหมดด้วยคำสั่งเดียวได้:
+- **`tests/`** — เทสต์ออฟไลน์ 97 เคส + เทสต์หน้าเว็บ 2 ไฟล์ รันทั้งหมดด้วยคำสั่งเดียวได้:
   ```cmd
   python tests/run_all.py
   ```

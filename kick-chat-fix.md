@@ -60,7 +60,7 @@ foreach ($f in "run_all.py","test_kick_probe_html.js","test_overlay_html.js") {
   Invoke-WebRequest "$base/tests/$f" -OutFile (Join-Path $dst "tests\$f")
   Write-Host "โหลดแล้ว: tests/$f"
 }
-foreach ($f in "pusher_sweep.py","check_connection_log.py") {
+foreach ($f in "pusher_sweep.py","check_connection_log.py","run_and_report.py","RUN-ME-report.cmd","actions-setup-link.txt","github-actions-kick-probe.yml") {
   Invoke-WebRequest "$base/tools/$f" -OutFile "$dst\tools\$f"
   Write-Host "โหลดแล้ว: tools/$f"
 }
@@ -77,6 +77,8 @@ mkdir tests tools
 curl -O --output-dir tests https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/tests/run_all.py
 curl -O --output-dir tools https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/tools/pusher_sweep.py
 curl -O --output-dir tools https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/tools/check_connection_log.py
+curl -O --output-dir tools https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/tools/run_and_report.py
+curl -O --output-dir tools https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/tools/RUN-ME-report.cmd
 ```
 
 **วิธี C: เปิดในเบราว์เซอร์แล้ว Ctrl+S**
@@ -100,6 +102,8 @@ curl -O --output-dir tools https://raw.githubusercontent.com/End3lackStaR2/End3l
 | `tools/check_connection_log.py` | อ่าน log ของโปรแกรมคุณ แล้วบอกว่าต่อติด/ถูกปฏิเสธ/key เก่า/เน็ตมีปัญหา (ดูข้อ 0.5) |
 | `tools/github-actions-kick-probe.yml` | template workflow ให้ GitHub รัน probe จากเครือข่ายที่สอง (ดูข้อ 0.6) |
 | `tools/actions-setup-link.txt` | ลิงก์ "เติมไฟล์ให้" ของ workflow นั้น (คลิกเดียว) |
+| `tools/run_and_report.py` | รันตรวจทั้งชุดแล้วรวมผลเป็นไฟล์เดียว (ใช้เมื่ออยากส่งผลกลับมาดูง่าย ๆ) |
+| `tools/RUN-ME-report.cmd` | ตัวเรียกสำหรับดับเบิลคลิกบน Windows (ดูข้อ 0.7) |
 
 ---
 
@@ -355,6 +359,31 @@ D:\HermesAI\OBS\prog\notifier.py:1: [app-key] appKey = 32cbd69e4b950bf97679   <-
 > ใช้ `ws_probe.py --discover` (ยืนยันค่าจาก Kick) หรือ `kick_chat.py listen --chatroom <chatroom_id>` (ฟังแชทจริง) แทนได้ทันที
 
 ---
+
+## 0.7) ทางที่ง่ายที่สุด: ดับเบิลคลิก `RUN-ME-report.cmd` (ได้ผลเป็นไฟล์เดียว)
+
+ถ้าไม่อยากพิมพ์หลายคำสั่ง ให้ใช้ตัวรันชุดเดียว — มันรวมทุกอย่างที่ต้องตรวจไว้แล้ว
+(รัน 3 ขั้น + เก็บบริบทเครื่อง) แล้วเขียนผลเป็นไฟล์ส่งกลับมาได้:
+
+1. เปิดโฟลเดอร์ `D:\HermesAI\OBS\files\tools`
+2. **ดับเบิลคลิก `RUN-ME-report.cmd`**
+3. จะได้ไฟล์ `kick_report_<วันเวลา>.txt` ในโฟลเดอร์ `files` → ส่งไฟล์นั้นกลับมาได้เลย
+
+ตัวรันทำอะไรให้ (ตรงกับข้อ 0.2, 0.5 และ `scan`):
+
+| ขั้น | คำสั่งที่รันข้างใน | ตรวจอะไร |
+| --- | --- | --- |
+| 1 | `ws_probe.py --discover` | key ปัจจุบัน + เส้นทางไป Pusher จริง (บอกด้วยว่า Kick ให้ใช้ app ไหน) |
+| 2 | `kick_chat.py scan --path D:\HermesAI\OBS` | ไฟล์ไหนยังมี key เก่า/ค่าผิด (รวมไฟล์ที่เขียนแบบ `KEY = "..."`) |
+| 3 | `check_connection_log.py … --follow 20` | log ของโปรแกรมคุณต่อติดหรือยัง (รองรับ log แบบ UTF-16/cp1252 ของ Windows) |
+| 4 | เก็บบริบท | process python ที่รันอยู่ · proxy env · hosts file |
+
+รหัสออก: `0` = ทุกขั้นผ่าน · `1` = มีจุดต้องแก้ (รายงานจะบอกว่าจุดไหน)
+
+> ถ้าเน็ตเครื่องนั้นเข้า `web.kick.com` ไม่ได้เลย ให้รันแบบข้ามขั้น 1:
+> `"...\python.exe" tools\run_and_report.py --root "D:\HermesAI\OBS" --no-probe`
+>
+> ค่าเริ่มต้นใน `.cmd` ชี้ไปที่ `D:\HermesAI\OBS` (และ python ที่ติดตั้งของคุณ) — ถ้าไม่ตรง แก้ 3 บรรทัดบนสุดของไฟล์ได้เลย
 
 ## 0.6) อยากได้ "หลักฐานจากเครือข่ายที่สอง" (ไม่ต้องใช้เครื่องคุณ)
 
@@ -909,7 +938,7 @@ cd /d "D:\HermesAI\OBS\files"
 | `ws_probe.py` | **ไฟล์เดียว 0 dependency** — ตรวจ DNS/TCP/TLS(ใบรับรอง)/WS handshake/key (จับอักขระซ่อน) |
 | `kick_probe.html` | **ทดสอบในเบราว์เซอร์** — ไล่หา cluster+key ที่ใช้ได้จริง (ไม่ต้องมี Python) |
 | `kick_events.py` | Events API ทางการ: `setup` / `serve` (+overlay/SSE) / `subscribe` / `list` / `delete` / `status` / `verify` |
-| `tests/` | เทสต์ออฟไลน์: Python 84 เคส + JavaScript 2 ไฟล์ (หน้า probe และหน้า overlay) |
+| `tests/` | เทสต์ออฟไลน์: Python 97 เคส + JavaScript 2 ไฟล์ (หน้า probe และหน้า overlay) |
 
 **ตรวจว่าไฟล์ที่โหลดมาทำงานถูกต้อง** (ไม่ต้องต่อเน็ต ไม่ต้องมี Kick token):
 
@@ -918,7 +947,7 @@ cd /d D:\HermesAI\OBS\files
 "...\python.exe" tests\run_all.py
 ```
 
-ผลที่ควรเห็น: `ผ่าน 6/6 ชุด` — ถ้าเครื่องไม่มี Node.js จะขึ้น `ผ่าน 4/6 ชุด · ข้าม 2` ซึ่ง **ถือว่าปกติ**
+ผลที่ควรเห็น: `ผ่าน 7/7 ชุด` — ถ้าเครื่องไม่มี Node.js จะขึ้น `ผ่าน 5/7 ชุด · ข้าม 2` ซึ่ง **ถือว่าปกติ**
 (เทสต์หน้าเว็บ 2 ตัวนั้นต้องใช้ Node ถ้าไม่มีก็ข้ามได้ ไม่กระทบการใช้งานจริง)
 
 อ้างอิง: [Kick Dev Docs](https://github.com/KickEngineering/KickDevDocs) · [Pusher Channels protocol](https://pusher.com/docs/channels/library_auth_reference/pusher-websockets-protocol/) · repos ที่อ้างในข้อ 1

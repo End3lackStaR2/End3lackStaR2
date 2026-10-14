@@ -1497,7 +1497,9 @@ SCAN_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "dist"
 SCAN_PATTERNS = (
     ("ws-url", re.compile(r"wss?://[^\s\"'`,)]*pusher[^\s\"'`,)]*", re.I)),
     ("pusher-host", re.compile(r"\bws-[a-z0-9]+\.pusher\.com\b", re.I)),
-    ("app-key", re.compile(r"(?:app_?key|pusher_?key|PUSHER_KEY)[\"'\s:=]+([0-9a-fA-F]{12,40})", re.I)),
+    ("app-key", re.compile(r"(?:app_?key|pusher_?key|PUSHER_KEY)[\"'\s:=]+([0-9a-zA-Z]{12,40})", re.I)),
+    # key ที่เขียนสั้น ๆ ว่า KEY = "..." หรือ KEY: "..." (ไม่ต้องมีคำว่า app/pusher นำหน้า)
+    ("app-key", re.compile(r"\bKEY[\"'\s:=]+([0-9a-zA-Z]{16,40})\b")),
     ("hex-key", re.compile(r"\b([0-9a-f]{32})\b")),
     ("cluster", re.compile(r"(?:cluster|PUSHER_CLUSTER)[\"'\s:=]+[\"']?([a-z]{2,4}\d?)", re.I)),
 )
@@ -1521,11 +1523,21 @@ def scan_text_for_pusher(text: str) -> list[tuple[str, str]]:
     return hits
 
 
-def iter_scan_files(root: Path, exts: set[str], max_bytes: int = 2_000_000):
+def iter_scan_files(root: Path, exts: set[str], max_bytes: int = 2_000_000, exclude: tuple[str, ...] = ()):
+    """ไล่ไฟล์ที่จะสแกน
+
+    exclude = ชื่อ/ท่อนชื่อไฟล์ที่ไม่ต้องสแกน (เช่นไฟล์รายงานที่เครื่องมือเราเพิ่งเขียน)
+    ค่าเริ่มต้นจะข้ามไฟล์รายงานของเราเอง (kick_report_*.txt) และสำรอง .bak เพื่อไม่ให้รายงานรบกวนผล
+    """
+    patterns = tuple(exclude) + ("kick_report_",)
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SCAN_SKIP_DIRS and not d.startswith(".")]
         for filename in filenames:
             path = Path(dirpath) / filename
+            if any(pattern and pattern in filename for pattern in patterns):
+                continue
+            if filename.endswith(".bak") or ".bak-" in filename:
+                continue
             if path.suffix.lower() not in exts and filename.lower() not in (".env", "procfile"):
                 continue
             try:
@@ -1555,11 +1567,13 @@ def cmd_scan(args) -> int:
     if not root.exists():
         fail(f"ไม่พบ path: {root}")
     exts = {e if e.startswith(".") else "." + e for e in (args.exts or "").split(",") if e} or SCAN_EXTENSIONS
+    raw_exclude = getattr(args, "exclude", None) or ""
+    exclude = tuple(item.strip() for item in str(raw_exclude).split(",") if item.strip())
 
     print(f"=== สแกนหาค่า pusher ใน {root} ===")
     files = 0
     findings: list[tuple[str, int, str, str]] = []
-    for path in iter_scan_files(root, exts):
+    for path in iter_scan_files(root, exts, exclude=exclude):
         files += 1
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
@@ -1568,7 +1582,14 @@ def cmd_scan(args) -> int:
         if "pusher" not in text.lower() and not any(k in text.lower() for k in (DEFAULT_APP_KEY, *RETIRED_APP_KEYS)):
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
-            for kind, found in scan_text_for_pusher(line):
+            per_line = scan_text_for_pusher(line)
+            # กันตกหล่น: ถ้าบรรทัดนี้มี "key ที่ Kick ปิดแล้ว" ตรง ๆ ต้องรายงานเสมอ
+            # (ไฟล์อาจเขียน key ไว้ในรูปแบบที่ pattern ไม่รู้จัก เช่น const, ตัวแปรใน JS, หรือใน .env)
+            reported_values = {found.split("=", 1)[-1].strip().lower() for _kind, found in per_line}
+            for retired in RETIRED_APP_KEYS:
+                if retired in line.lower() and retired not in reported_values:
+                    per_line.append(("app-key", f"appKey = {retired}"))
+            for kind, found in per_line:
                 findings.append((str(path), lineno, kind, found))
 
     if not findings:
