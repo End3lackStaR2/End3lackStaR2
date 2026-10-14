@@ -98,6 +98,8 @@ curl -O --output-dir tools https://raw.githubusercontent.com/End3lackStaR2/End3l
 | `kick_events.py` | ทางเลือกทางการด้วย webhook แทน Pusher — ไม่ต้องพึ่ง key นี้เลย (ดูข้อ 6) |
 | `tools/pusher_sweep.py` | ยิงทดสอบ **ทุก cluster × ทุก key** พร้อมกันแล้วสรุปเป็นตารางเดียว (มี `--discover` ให้ถาม Kick ก่อน) |
 | `tools/check_connection_log.py` | อ่าน log ของโปรแกรมคุณ แล้วบอกว่าต่อติด/ถูกปฏิเสธ/key เก่า/เน็ตมีปัญหา (ดูข้อ 0.5) |
+| `tools/github-actions-kick-probe.yml` | template workflow ให้ GitHub รัน probe จากเครือข่ายที่สอง (ดูข้อ 0.6) |
+| `tools/actions-setup-link.txt` | ลิงก์ "เติมไฟล์ให้" ของ workflow นั้น (คลิกเดียว) |
 
 ---
 
@@ -322,8 +324,60 @@ cd /d D:\HermesAI\OBS\files
 
 รหัสออก: `0` ต่อติด · `3` ถูกปฏิเสธ (มี key ที่ Pusher เห็นมาให้ด้วย) · `4` ไม่พบหลักฐาน/หมดเวลารอ · `5` ไม่พบไฟล์ log
 
+**ถ้ายังเห็น 4001 → หาว่าไฟล์ไหนยังฝัง key เก่า** (`scan` จะชี้ไฟล์ให้ และแยกให้ว่าไฟล์ไหนซ่อมอัตโนมัติได้):
+
+```cmd
+"...\python.exe" kick_chat.py scan --path "D:\HermesAI\OBS"
+```
+
+ตัวอย่างผลลัพธ์จริง:
+
+```
+D:\HermesAI\OBS\files\config.json:1: [app-key] appKey = 34bf7a0ff419a2a775b9
+D:\HermesAI\OBS\prog\config.json:1: [app-key] appKey = 32cbd69e4b950bf97679   <-- ต้องแก้! key นี้ถูก Kick ปิดแล้ว (ต.ค. 2026)
+D:\HermesAI\OBS\prog\notifier.py:1: [app-key] appKey = 32cbd69e4b950bf97679   <-- ต้องแก้! ...
+
+      สแกน 3 ไฟล์ พบ 8 จุด (ต้องแก้/น่าสงสัย 2 จุด)
+
+[!]   พบ key เก่าที่ Kick ปิดแล้วใน 2 ไฟล์ — โปรแกรมที่อ่านไฟล์เหล่านี้จะได้ 4001 แน่นอน ต่อให้ config หลักแก้แล้วก็ตาม:
+
+      แก้ได้ทันทีด้วย fix-config (ไฟล์ JSON):
+        python kick_chat.py fix-config --config-file "D:\HermesAI\OBS\prog\config.json" --apply
+
+      ต้องแก้ด้วยมือ (ไฟล์โค้ด/ข้อความธรรมดา) — เปลี่ยน key เป็น 34bf7a0ff419a2a775b9:
+        D:\HermesAI\OBS\prog\notifier.py
+```
+
+> `scan` คืนรหัส `1` เมื่อเจอค่าที่ต้องแก้ (ใช้ในสคริปต์ต่อได้) และ `0` เมื่อสะอาด
+> ค่าที่ไม่ใช่ key ปัจจุบันจะถูกติดธงเสมอ — ทั้ง "key เก่าที่ปิดแล้ว" และ "key ที่ไม่รู้จัก" (เช่น OAuth client_id)
+
 > **หมายเหตุ:** ถ้าคำสั่ง `kick_notifier.py` ขึ้น *"can't open file ... No such file or directory"* แปลว่าไฟล์นั้นไม่ได้อยู่ในโฟลเดอร์ —
 > ใช้ `ws_probe.py --discover` (ยืนยันค่าจาก Kick) หรือ `kick_chat.py listen --chatroom <chatroom_id>` (ฟังแชทจริง) แทนได้ทันที
+
+---
+
+## 0.6) อยากได้ "หลักฐานจากเครือข่ายที่สอง" (ไม่ต้องใช้เครื่องคุณ)
+
+ถ้าอยากรู้ให้แน่ว่าปัญหาอยู่ที่ **ค่าที่ตั้ง** หรือที่ **เน็ตฝั่งคุณ** — ให้ GitHub รัน probe ให้
+(เครื่อง GitHub อยู่อเมริกา เน็ตคนละทางกับคุณและคนละทางกับ sandbox ที่ผมใช้)
+
+1. เปิดลิงก์นี้ (จะเปิดหน้า "New file" พร้อม **ชื่อไฟล์ + เนื้อหา** ให้ครบ — คัดลอกลิงก์จากไฟล์
+   [`tools/actions-setup-link.txt`](tools/actions-setup-link.txt) ในรีโป):
+   หน้าเว็บของ GitHub จะเติม `.github/workflows/kick-probe.yml` ให้อัตโนมัติ
+2. กด **Commit changes** → workflow จะ **รันเองทันที** (เพราะ trigger เป็น `push`)
+3. เปิดแท็บ **Actions** → คลิก run ชื่อ `kick-pusher-probe` → ดูหัวข้อ **Summary** จะมีตาราง
+   `cluster / key / ผลลัพธ์` และไฟล์ `sweep_result.json` ให้โหลด (ส่วน Artifacts)
+
+อ่านผลยังไง:
+
+| ผลจาก GitHub | แปลว่า |
+| --- | --- |
+| `us2 34bf7a0ff419a2a775b9 ✅ ต่อได้` | ค่าใหม่ใช้ได้จริง — ถ้าเครื่องคุณยังไม่ต่อ **ปัญหาอยู่ที่ฝั่งเครื่อง/เน็ตคุณ** (repo/process เก่า/proxy) |
+| `us2 32cbd69e4b950bf97679 ❌` | ยืนยันว่า key เก่าตายจริงตามที่ Kick ประกาศ |
+| ทุกคู่ ❌ พร้อม `--check-kick` ขึ้น Cloudflare | เน็ตของ runner ก็โดน Cloudflare กั้น — ใช้ `kick_probe.html` จากเบราว์เซอร์คุณแทน |
+
+> ปุ่ม **Run workflow** (สั่งรันเอง) จะโผล่เฉพาะเมื่อไฟล์ workflow อยู่บนสาขาหลัก `main`
+> ถ้ายังไม่เห็นปุ่ม ไม่ใช่ความผิดพลาด — ใช้ผลจากรอบที่ commit แทนได้เลย
 
 **กรณีที่พบอักขระซ่อน** ผลจะออกแบบนี้ — แก้ด้วยการพิมพ์ key ใหม่ (อย่าคัดลอกจากแชท/หน้าเว็บ):
 
@@ -855,7 +909,7 @@ cd /d "D:\HermesAI\OBS\files"
 | `ws_probe.py` | **ไฟล์เดียว 0 dependency** — ตรวจ DNS/TCP/TLS(ใบรับรอง)/WS handshake/key (จับอักขระซ่อน) |
 | `kick_probe.html` | **ทดสอบในเบราว์เซอร์** — ไล่หา cluster+key ที่ใช้ได้จริง (ไม่ต้องมี Python) |
 | `kick_events.py` | Events API ทางการ: `setup` / `serve` (+overlay/SSE) / `subscribe` / `list` / `delete` / `status` / `verify` |
-| `tests/` | เทสต์ออฟไลน์: Python 73 เคส + JavaScript 2 ไฟล์ (หน้า probe และหน้า overlay) |
+| `tests/` | เทสต์ออฟไลน์: Python 84 เคส + JavaScript 2 ไฟล์ (หน้า probe และหน้า overlay) |
 
 **ตรวจว่าไฟล์ที่โหลดมาทำงานถูกต้อง** (ไม่ต้องต่อเน็ต ไม่ต้องมี Kick token):
 

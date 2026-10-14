@@ -1,18 +1,30 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# ไฟล์นี้เป็น "template" ของ GitHub Actions workflow
+# GitHub Actions workflow "kick-pusher-probe" — เป็น template ให้ก๊อปไปใช้
 #
-# ทำไมต้องเป็น template: token ที่ใช้ push อัตโนมัติไม่มีสิทธิ์ workflow จึงสร้าง
-# ไฟล์ใน .github/workflows/ ให้ไม่ได้ — ต้องก๊อปเองครั้งเดียว (30 วินาที)
+# ทำไมต้องก๊อปเอง: token ที่ใช้ push โค้ดอัตโนมัติไม่มีสิทธิ์ `workflow` GitHub จึง
+# ปฏิเสธการสร้างไฟล์ใน .github/workflows/ ให้ (ต้องทำผ่านหน้าเว็บครั้งเดียว)
 #
-# วิธีใช้ (ทำผ่านเบราว์เซอร์ได้เลย ไม่ต้องมี token):
-#   1. เปิด https://github.com/End3lackStaR2/End3lackStaR2/new/arena/2a41429a-end3lackstar2
-#   2. ตั้งชื่อไฟล์:  .github/workflows/kick-probe.yml
-#   3. วางเนื้อหาด้านล่างนี้ทั้งหมด → Commit changes
-#   4. ไปที่แท็บ Actions → เลือก "kick-pusher-probe" → Run workflow
-#   5. อ่านผลในหน้าสรุปของ run (จะมีตาราง cluster/key และไฟล์ sweep_result.json ให้โหลด)
+# ได้อะไร: รัน `ws_probe.py --discover` + `tools/pusher_sweep.py` จากเครือข่ายของ
+# GitHub (คนละทางกับเครื่องคุณ) แล้วแนบผลเป็นตารางในหน้า run + ไฟล์ sweep_result.json
+#   - ถ้าที่นั่นต่อได้ด้วย key ใหม่ = ปัญหาอยู่ที่เครื่อง/เน็ตฝั่งคุณ
+#   - ถ้าที่นั่นก็ยังไม่ได้ = ปัญหาอยู่ที่ค่าที่ตั้ง/key เอง
 #
-# ได้อะไร: ยิงทดสอบจากเครือข่ายของ GitHub (คนละทางกับเครื่องคุณและคนละทางกับ sandbox)
-# ถ้าที่นั่นต่อได้ = ปัญหาอยู่ที่เครื่อง/เน็ตคุณ · ถ้าที่นั่นก็ไม่ได้ = ปัญหาอยู่ที่ key/c่าที่ตั้ง
+# วิธีใช้ (เลือกทางใดทางหนึ่ง)
+#
+#   ทาง A — คลิกเดียว (แนะนำ): เปิดลิงก์ "เติมไฟล์ให้" ที่ให้ไว้ในหัวข้อ 0.6 ของ
+#           kick-chat-fix.md → จะเปิดหน้า New file พร้อมชื่อไฟล์และเนื้อหาครบ
+#           → กด "Commit changes" → workflow จะรันเองทันที (เพราะ trigger เป็น push)
+#
+#   ทาง B — ทำมือ 4 ขั้น:
+#     1. เปิด https://github.com/End3lackStaR2/End3lackStaR2/new/arena/2a41429a-end3lackstar2
+#     2. ตั้งชื่อไฟล์:  .github/workflows/kick-probe.yml
+#     3. วางเนื้อหาด้านล่างทั้งหมด → Commit changes
+#     4. เปิดแท็บ Actions → ดูผลของ run "kick-pusher-probe"
+#
+# หมายเหตุสำคัญเรื่อง trigger:
+#   - `push` ทำงานได้ทุกสาขา → พอ commit ไฟล์นี้ มันรันให้เลย
+#   - `workflow_dispatch` (ปุ่ม "Run workflow") จะโผล่เฉพาะเมื่อไฟล์นี้อยู่บนสาขาหลัก
+#     (main) เท่านั้น — ถ้ายังไม่เห็นปุ่ม ไม่ใช่ความผิดพลาด ให้ดูผลจากรอบที่ push แทน
 # ─────────────────────────────────────────────────────────────────────────────
 name: kick-pusher-probe
 
@@ -22,6 +34,7 @@ on:
     paths:
       - ".github/workflows/kick-probe.yml"
       - "tools/pusher_sweep.py"
+      - "ws_probe.py"
 
 permissions:
   contents: read

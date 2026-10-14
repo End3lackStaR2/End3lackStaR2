@@ -770,7 +770,7 @@ def test_scan_finds_and_flags_values() -> None:
         with redirect_stdout(out), redirect_stderr(err):
             rc = kc.cmd_scan(args)
         text = out.getvalue()
-        assert rc == 0
+        assert rc == 1, "เจอค่าที่ต้องแก้แล้วต้องคืนรหัส 1 (ให้ใช้ในสคริปต์ได้)"
         assert "config.json:" in text and "ไม่ใช่ cluster ที่ Kick ใช้" in text
         assert "sub/app.py" in text and "ws-us2.pusher.com" in text
         assert "node_modules" not in text, "ต้องข้าม node_modules"
@@ -963,6 +963,69 @@ def test_cmd_report_show_keys_reveals() -> None:
             assert GOOD_KEY in out.getvalue()
         finally:
             kc.SCRIPT_DIR, kc.probe_once, kc.python_processes, kc.HOSTS_FILES = original
+
+
+
+def test_scan_flags_retired_key_and_separates_json_files() -> None:
+    """key เก่าที่ Kick ปิดแล้วต้องเด่นชัด และบอกได้ว่าไฟล์ไหน auto-fix ได้"""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "prog").mkdir()
+        (root / "prog" / "config.json").write_text(json.dumps({
+            "pusher": {"cluster": "us2", "appKey": RETIRED_KEY},
+        }), encoding="utf-8")
+        (root / "prog" / "notifier.py").write_text(
+            f'PUSHER_KEY = "{RETIRED_KEY}"\n', encoding="utf-8")
+        (root / "config.json").write_text(json.dumps({
+            "pusher": {"cluster": "us2", "appKey": GOOD_KEY},
+        }), encoding="utf-8")
+
+        args = argparse.Namespace(path=tmpdir, exts=None, config=None, app_key=None, clusters=None,
+                                  timeout=1.0, all=False, ws_url=None)
+        out, err = io.StringIO(), io.StringIO()
+        from contextlib import redirect_stderr
+
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = kc.cmd_scan(args)
+        text = out.getvalue()
+        assert rc == 1
+        assert "ต้องแก้" in text and "ถูก Kick ปิดแล้ว" in text
+        assert "prog/config.json" in text and "prog/notifier.py" in text
+        # JSON → เสนอ fix-config ; ไฟล์โค้ด → บอกให้แก้ด้วยมือ
+        assert "fix-config --config-file" in text and "prog/config.json" in text
+        assert "ต้องแก้ด้วยมือ" in text and "notifier.py" in text
+        # key ที่ถูกต้องอยู่แล้วต้องไม่ขึ้นว่า "ดูปกติ" ปนกับปัญหา
+        assert "ต้องแก้/น่าสงสัย" in text
+
+
+def test_scan_clean_when_only_current_key() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        (root / "config.json").write_text(json.dumps({
+            "pusher": {"cluster": "us2", "appKey": GOOD_KEY},
+        }), encoding="utf-8")
+        args = argparse.Namespace(path=tmpdir, exts=None, config=None, app_key=None, clusters=None,
+                                  timeout=1.0, all=False, ws_url=None)
+        out, err = io.StringIO(), io.StringIO()
+        from contextlib import redirect_stderr
+
+        with redirect_stdout(out), redirect_stderr(err):
+            rc = kc.cmd_scan(args)
+        assert rc == 0, out.getvalue()
+        assert "ดูปกติ" in out.getvalue()
+
+
+def test_key_verdict_levels() -> None:
+    assert kc.key_verdict(GOOD_KEY) == ("", "")
+    assert kc.key_verdict("  " + GOOD_KEY + "  ") == ("", "")
+    level, note = kc.key_verdict(RETIRED_KEY)
+    assert level == "old" and "ปิดแล้ว" in note
+    level, note = kc.key_verdict("01M2WEYN058CXSA5EQB2QATV8M")
+    assert level == "unknown" and "client_id" in note
 
 
 if __name__ == "__main__":

@@ -49,6 +49,8 @@ DEFAULT_APP_KEY = "34bf7a0ff419a2a775b9"
 # key เก่าที่ Kick ปิดไปแล้ว → ใช้แล้วได้ error 4001 "App key not in this cluster" เสมอ
 RETIRED_APP_KEYS = ("32cbd69e4b950bf97679",)
 FALLBACK_APP_KEYS = RETIRED_APP_KEYS                # ชื่อเดิม ยังใช้ที่อื่นในไฟล์
+# key ที่ถือว่า "ถูกต้องตอนนี้" — ค่าเก่าต้องไม่ถูกนับเป็นค่าที่ใช้ได้อีก
+KNOWN_APP_KEYS = (DEFAULT_APP_KEY,)
 DEFAULT_CLUSTER = "us2"
 # endpoint ที่ Kick ใช้บอกว่า "ตอนนี้ให้เชื่อมต่อ Pusher app ไหน"
 REALTIME_CONNECTION_URL = "https://web.kick.com/api/v1/realtime/connection"
@@ -1534,6 +1536,20 @@ def iter_scan_files(root: Path, exts: set[str], max_bytes: int = 2_000_000):
             yield path
 
 
+def key_verdict(key: str) -> tuple[str, str]:
+    """ตัดสินว่า key ที่พบในไฟล์มีปัญหาอะไร
+
+    คืน (ระดับ, ข้อความ) โดยระดับ: "" = ปกติ · "old" = key ที่ Kick ปิดแล้ว (ต้องแก้) ·
+    "unknown" = ไม่ใช่ key ที่รู้จักตอนนี้ (มักเกิดจากเอา OAuth client_id มาใส่ช่อง appKey)
+    """
+    value = (key or "").strip().lower()
+    if not value or value == DEFAULT_APP_KEY.lower():
+        return "", ""
+    if value in RETIRED_APP_KEYS:
+        return "old", f"key นี้ถูก Kick ปิดแล้ว (ต.ค. 2026) — ต้องเปลี่ยนเป็น {DEFAULT_APP_KEY}"
+    return "unknown", f"ไม่ใช่ key ปัจจุบัน ({DEFAULT_APP_KEY}) — ถ้าเป็น OAuth client_id จะใช้กับ Pusher ไม่ได้"
+
+
 def cmd_scan(args) -> int:
     root = Path(args.path).expanduser()
     if not root.exists():
@@ -1560,6 +1576,7 @@ def cmd_scan(args) -> int:
         return 1
 
     bad = 0
+    old_key_files: set[str] = set()
     for path, lineno, kind, found in findings:
         flag = ""
         if kind in ("ws-url", "pusher-host"):
@@ -1575,18 +1592,46 @@ def cmd_scan(args) -> int:
                 bad += 1
         if kind in ("app-key", "hex-key"):
             key = found.split("=", 1)[-1].strip()
-            if key and key.lower() not in (DEFAULT_APP_KEY, *FALLBACK_APP_KEYS):
-                flag = "   <-- key นี้ไม่ใช่ key ล่าสุดที่ Kick ใช้?"
+            level, note = key_verdict(key)
+            if level == "old":
+                flag = f"   <-- ต้องแก้! {note}"
+                bad += 1
+                old_key_files.add(str(path))
+            elif level == "unknown":
+                flag = f"   <-- น่าสงสัย: {note}"
                 bad += 1
         print(f"{path}:{lineno}: [{kind}] {found}{flag}")
 
     print()
-    print(f"      สแกน {files} ไฟล์ พบ {len(findings)} จุด" + (f" (น่าสงสัย {bad})" if bad else " (ดูปกติ)"))
+    print(f"      สแกน {files} ไฟล์ พบ {len(findings)} จุด"
+          + (f" (ต้องแก้/น่าสงสัย {bad} จุด)" if bad else " (ดูปกติ)"))
+    if old_key_files:
+        print()
+        warn(f"พบ key เก่าที่ Kick ปิดแล้วใน {len(old_key_files)} ไฟล์ — "
+             "โปรแกรมที่อ่านไฟล์เหล่านี้จะได้ 4001 แน่นอน ต่อให้ config หลักแก้แล้วก็ตาม:")
+        json_fixable, manual = [], []
+        for item in sorted(old_key_files):
+            target = Path(item)
+            try:
+                json.loads(target.read_text(encoding="utf-8-sig"))
+                json_fixable.append(item)
+            except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+                manual.append(item)
+        if json_fixable:
+            print()
+            print("      แก้ได้ทันทีด้วย fix-config (ไฟล์ JSON):")
+            for item in json_fixable:
+                print(f"        python kick_chat.py fix-config --config-file \"{item}\" --apply")
+        if manual:
+            print()
+            print("      ต้องแก้ด้วยมือ (ไฟล์โค้ด/ข้อความธรรมดา) — เปลี่ยน key เป็น "
+                  + DEFAULT_APP_KEY + ":")
+            for item in manual:
+                print(f"        {item}")
     if bad:
         print()
-        info("แก้ค่าที่ถูกปิดแล้วให้เป็นค่าล่าสุด: us2/" + DEFAULT_APP_KEY)
-        info("หรือใช้:  python kick_chat.py fix-config --config-file \"<ไฟล์ที่มีค่าเก่า>\" --apply")
-    return 0
+        info("แก้เสร็จแล้วปิดทุก process เก่า แล้วเริ่มใหม่ 1 ตัว (ไม่งั้นยังรันค่าเก่าอยู่)")
+    return 1 if bad else 0
 
 
 # ---------------------------------------------------------------------------
@@ -1695,7 +1740,7 @@ def cmd_extract(args) -> int:
     canonical = canonical_pusher()
     same_as_canonical = (guess["cluster"] == canonical["cluster"]
                          and guess["app_key"].lower() == canonical["app_key"].lower())
-    if guess["app_key"] and guess["app_key"].lower() not in (DEFAULT_APP_KEY, *FALLBACK_APP_KEYS):
+    if guess["app_key"] and guess["app_key"].lower() not in KNOWN_APP_KEYS:
         warn(f"key ที่พบไม่ใช่ key สาธารณะที่รู้จัก ({mask(DEFAULT_APP_KEY, 10)}) — มักเกิดจากการเอา OAuth client_id มาใส่ช่อง appKey")
         print()
         print("ค่ามาตรฐานที่ Kick ใช้จริง (ถ้าใช้ค่านี้จะต่อได้แน่):")
@@ -1911,7 +1956,7 @@ def cmd_report(args) -> int:
             status, detail = "error", "(โปรแกรมออกกลางทาง)"
         add(f"{label}:")
         add(f"   {parsed.hostname} key {key_shown} -> {status}: {detail}")
-        if key_match and key_match.group(1).lower() not in (DEFAULT_APP_KEY, *FALLBACK_APP_KEYS):
+        if key_match and key_match.group(1).lower() not in KNOWN_APP_KEYS:
             add(f"   (หมายเหตุ: key ข้างบนไม่ใช่ key สาธารณะ {DEFAULT_APP_KEY})")
     add("")
     add("ตรวจให้ครบ 3 อย่างในข้อความ error: (1) key ที่ Pusher พูดถึง (2) host ที่ต่อ (3) ใครเป็นคนรัน")
