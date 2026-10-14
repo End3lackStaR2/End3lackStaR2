@@ -20,6 +20,42 @@
 
 ---
 
+## 0) อ่านก่อนเลย: error "not in this cluster" เกิดได้ 3 แบบ — แยกให้ออกใน 10 วินาที
+
+Pusher จะบอก **key ที่มันเห็น** มาในข้อความ error เสมอ ให้จับ 3 อย่างนี้ในบรรทัด error:
+
+```
+Pusher : error : {"code":4001,"message":"App key <KEY-ที่-Pusher-เห็น> not in this cluster"}
+                                     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   1) KEY ที่ Pusher เห็น   2) host ที่คุณต่อ   3) process ไหนเป็นคนต่อ (เก่าหรือใหม่?)
+```
+
+| KEY ที่ Pusher เห็น | แปลว่า | แก้ตรงไหน |
+| --- | --- | --- |
+| `32cbd69e4b950bf97679` (key สาธารณะ) | key ถูก — ปัญหาอยู่ที่ host/เส้นทาง/process เก่า | ดูข้อ 3.5 |
+| อะไรก็ตามที่ไม่ใช่ key ข้างบน | **มีคนเอาค่าผิดใส่ช่อง `appKey`** (พบบ่อยสุด: เอา OAuth **client_id** จาก Kick Developer Portal มาใส่) | ใส่ `32cbd69e4b950bf97679` แทน — **client_id/client_secret ไม่เกี่ยวอะไรกับ Pusher เลย** |
+| key ยาว 40+ ตัว / มีอักขระแปลก | คัดลอกมาครบไม่ถึง หรือมีช่องว่าง/อักขระซ่อน | ใช้ `extract` ให้แกะใหม่ |
+
+**กับดัก 2 ข้อที่ทำให้ "แก้แล้วยังไม่หาย":**
+
+1. **Token หมดอายุไม่เกี่ยว** — การอ่านแชทผ่าน Pusher **ไม่ใช้ token เลย** (token ใช้เฉพาะตอน *ส่ง* ข้อความผ่าน API ทางการ) → อย่าเสียเวลารีเซ็ต token เพื่อแก้ error นี้
+2. **Process เก่ายังรันอยู่** — ถ้ามี `python` หลายตัว ตัวเก่าที่เริ่มก่อนแก้ config จะต่อด้วยค่าเดิมและพ่น error เดิมลง log เดิม ทำให้เข้าใจว่าแก้ไม่สำเร็จ:
+   ```cmd
+   tasklist | findstr /i python
+   taskkill /IM python.exe /F
+   :: แล้วเช็คเวลาของ log ว่าไม่มีบรรทัดใหม่จาก process เก่าโผล่มาอีก
+   tasklist | findstr /i python
+   :: สตาร์ทตัวใหม่ 1 ตัวเท่านั้น
+   ```
+   ตรวจว่า process ไหนรันด้วย argument อะไร (เห็น command line เต็ม):
+   ```powershell
+   Get-CimInstance Win32_Process -Filter "Name='python.exe'" | Select-Object ProcessId,CreationDate,CommandLine | Format-List
+   ```
+
+💡 **ทางลัด:** `kick_chat.py report` (ข้อ 3.6) เก็บทั้ง 3 อย่างนี้มาให้ในบล็อกเดียว
+
+---
+
 ## 1) หลักฐานว่ายังใช้ `us2` (ตรวจเมื่อ 14 ต.ค. 2026)
 
 ผมไล่ดูโค้ดที่ Push ล่าสุดบน GitHub ซึ่งยังใช้ Pusher ของ Kick อยู่:
@@ -170,22 +206,105 @@ D:\HermesAI\OBS\config.json:9: [pusher-host] host = ws-us2.pusher.com
 
 ---
 
+### 3.6) ส่งรายงานให้ผมวิเคราะห์: `report` + `extract`
+
+**คำสั่งที่ 1 — รวบรวมทุกอย่างเป็นบล็อกเดียว** (ปิดบัง secret ให้แล้ว ส่งต่อได้ปลอดภัย):
+
+```cmd
+cd /d "D:\HermesAI\OBS\files"
+"C:\Users\mail3\AppData\Local\Programs\Python\Python312\python.exe" kick_chat.py report
+```
+
+ได้ผลลัพธ์แบบนี้ (คัดลอกทั้งหมดส่งมาได้เลย):
+
+```
+=== KICK CHAT REPORT ===
+--- process python ที่กำลังรัน ---
+Image Name   PID Session Name  Session#  Mem Usage
+python.exe  8123 Console        1    58,432 K
+PowerShell: ProcessId : 8123  CreationDate : 14/10/2026 05:12:31
+             CommandLine : python.exe kick_chat.py listen --chatroom 4242
+--- config ---
+ไฟล์ config  : D:\HermesAI\OBS\files\kick_chat_config.json (พบ)
+ค่าที่อ่านได้  : {"cluster": "us2", "app_key": "0139bca5...", "ws_url": "wss://ws-us2.pusher.com/app/0139bca5...?protocol=7"}
+มาจากฟิลด์    : {"cluster": "pusher.cluster", "app_key": "pusher.appKey", "ws_url": "pusher.wsUrl"}
+--- token (ไม่ใช้กับ Pusher — ใช้เฉพาะตอนส่งข้อความ) ---
+scope       : chat:write
+อายุ         : เหลืออีก 42 นาที
+--- สิ่งที่อาจดัก/แก้เส้นทาง ---
+hosts file   : ไม่มีการแก้ที่เกี่ยวกับ pusher
+proxy env    : ไม่มี
+DNS ws-us2.pusher.com   : 3.147.174.126, 52.15.178.107, 3.12.46.165
+--- ทดสอบเชื่อมต่อ Pusher จริง (ดูข้อความ error ว่ามันบอก key อะไร) ---
+ตาม config (cluster=us2):
+   ws-us2.pusher.com key 0139bca5... -> wrong-cluster: App key 0139bca5f0e1c1c7f4b0aa11 not in this cluster
+มาตรฐาน us2 + key สาธารณะ:
+   ws-us2.pusher.com key 32cbd69e... -> ok: {"socket_id": "123.456"}
+เทียบ ws-eu + key สาธารณะ (control):
+   ws-eu.pusher.com key 32cbd69e... -> wrong-cluster: App key 32cbd69e4b950bf97679 not in this cluster
+=== จบบล็อกรายงาน ===
+```
+
+อ่านผลเองก็ได้: ถ้าบรรทัด **"มาตรฐาน us2 + key สาธารณะ" ขึ้น `ok`** แต่บรรทัดตาม config ขึ้น `wrong-cluster` → **key ใน config ของคุณผิด** (ตัวที่พบบ่อยคือเอา OAuth client_id มาใส่)
+
+**คำสั่งที่ 2 — วางข้อความ/ล็อก/URL อะไรก็ได้ แล้วให้แกะค่าให้** (กันคัดลอกผิดช่อง):
+
+```cmd
+:: วางจากคลิปบอร์ด
+"...\python.exe" kick_chat.py extract --file "%USERPROFILE%\Desktop\clip.txt"
+
+:: หรือพิมพ์ตรง ๆ
+"...\python.exe" kick_chat.py extract --text "wss://ws-us2.pusher.com/app/xxxx?protocol=7"
+
+:: แกะ + ทดสอบ + แก้ config ให้เลยในคำสั่งเดียว
+"...\python.exe" kick_chat.py extract --file clip.txt --probe ^
+  --config-file "D:\HermesAI\OBS\files\config.json" --apply
+```
+
+ตัวอย่างผลลัพธ์เมื่อพบว่า key ในล็อกไม่ใช่ key จริง:
+
+```
+ค่าที่เลือกใช้:
+{ "cluster": "us2", "app_key": "0139bca5f0e1c1c7f4b0aa11", ... }
+[!]   key ที่พบไม่ใช่ key สาธารณะที่รู้จัก (32cbd69e4b...) — มักเกิดจากการเอา OAuth client_id มาใส่ช่อง appKey
+
+ค่ามาตรฐานที่ Kick ใช้จริง (ถ้าใช้ค่านี้จะต่อได้แน่):
+{ "cluster": "us2", "app_key": "32cbd69e4b950bf97679", ... }
+
+--- ทดสอบเชื่อมต่อ ---
+      ค่าจากข้อความ  -> wrong-cluster: App key 0139bca5... not in this cluster
+      ค่ามาตรฐาน us2 -> ok: {"socket_id": "..."}
+[OK]  ค่ามาตรฐานใช้ได้ (ค่าจากข้อความใช้ไม่ได้) — จะใช้ค่ามาตรฐานในการแก้ไฟล์
+```
+
+> `extract` จะสลับไปใช้ค่ามาตรฐานให้อัตโนมัติ **เฉพาะเมื่อทดสอบแล้วว่าค่ามาตรฐานต่อได้จริง** และค่าที่พบต่อไม่ได้
+
+---
+
 ### วิธี "ผู้เชี่ยวชาญ" หา cluster จริงใน 10 วินาที (ไม่ต้องเดา)
 
 เปิด <https://kick.com/> (หรือหน้าช่องคุณ) → กด **F12** → แท็บ **Console** → วางบรรทัดนี้:
 
 ```js
-copy(performance.getEntriesByType('resource').filter(r=>/pusher/i.test(r.name)).map(r=>r.name).join('\n') || 'ไม่พบ — ดูแท็บ Network แทน')
+(() => {
+  const ws = performance.getEntriesByType('resource')
+    .map(e => e.name).filter(n => /pusher/i.test(n));
+  const msg = ws.length ? ws.join('\n') : 'ไม่พบ push er ในหน่วยความจำ — รีเฟรชหน้า (F5) แล้วรันอีกครั้ง';
+  copy(msg); console.log(msg); return msg;
+})()
 ```
 
 มันจะคัดลอก URL ที่เบราว์เซอร์ใช้จริงลงคลิปบอร์ด (เช่น `wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&...`) →
+ถ้ายังได้ `ไม่พบ...` ให้ใช้แท็บ **Network** แทน (กรอง `pusher` → รีเฟรช → คลิกบรรทัด type `websocket` → คัดลอก Request URL) →
 เอามาวางในคำสั่งนี้ แล้วสคริปต์จะทดสอบ + แก้ config ให้ตรงกับความจริงทันที:
 
 ```cmd
 "...\python.exe" kick_chat.py discover --ws-url "wss://...ที่คัดลอกมา..."
 ```
 
-> **หมายเหตุ:** ผม (ผู้ช่วย) รัน `probe` แทนคุณไม่ได้ เพราะสภาพแวดล้อมที่ผมรันอยู่ต่อ `pusher.com`/`kick.com` ไม่ได้ (ทดสอบแล้ว: DNS resolve ได้ แต่ TCP/TLS ถูกบล็อก) — คำสั่ง `fix-config`/`probe`/`scan` ถูกออกแบบมาให้รันบนเครื่องคุณแล้วรายงานผลเหมือนที่ผมจะทำ
+> **หมายเหตุ 1:** token ที่หมดอายุ **ไม่ทำให้เกิด error นี้** — Pusher ไม่ใช้ token ในการอ่านแชท (token ใช้แค่ตอน `send` ข้อความ)
+>
+> **หมายเหตุ 2:** ผม (ผู้ช่วย) รัน `probe` แทนคุณไม่ได้ เพราะสภาพแวดล้อมที่ผมรันอยู่ต่อ `pusher.com`/`kick.com` ไม่ได้ (ทดสอบแล้ว: DNS resolve ได้ แต่ TCP/TLS ถูกบล็อก) — คำสั่ง `fix-config`/`probe`/`scan` ถูกออกแบบมาให้รันบนเครื่องคุณแล้วรายงานผลเหมือนที่ผมจะทำ
 
 ---
 
@@ -324,6 +443,8 @@ taskkill /IM python.exe /F
 | `kick_chat.py probe` | ไล่ทดสอบทุก cluster + บันทึก cluster ที่ใช้ได้ลง config |
 | `kick_chat.py fix-config --config-file "<ไฟล์>" [--apply]` | วินิจฉัย hosts/proxy/DNS/key แล้วซ่อม config ให้ (สำรอง .bak) |
 | `kick_chat.py scan --path "<โฟลเดอร์>"` | หาทุกไฟล์ในเครื่องที่มีค่า pusher เพื่อจับตัวที่ override |
+| `kick_chat.py report` | รวมทุกอย่าง (process/config/token/hosts/DNS/probe) เป็นบล็อกเดียวสำหรับส่งต่อ |
+| `kick_chat.py extract --file/-–text "..." [--probe] [--apply]` | แกะค่า pusher จากข้อความ/URL ที่วางมา แล้วเทียบกับค่ามาตรฐาน |
 | `kick_chat.py doctor` | ตรวจ config/token/cluster ทั้งหมด (ค่าเริ่มต้นเมื่อไม่ใส่คำสั่ง) |
 | `kick_chat.py discover --ws-url "..."` | รับ URL จาก DevTools/Console แล้วแยก cluster/key + ทดสอบให้ |
 | `kick_chat.py resolve --channel <slug>` | หา channel_id / chatroom_id / broadcaster_user_id |

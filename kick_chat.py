@@ -32,6 +32,7 @@ import re
 import socket
 import ssl
 import struct
+import subprocess
 import sys
 import time
 import urllib.error
@@ -1510,6 +1511,340 @@ def cmd_scan(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# คำสั่ง: extract — แกะค่า pusher จาก "อะไรก็ได้" ที่ผู้ใช้วางมา
+# ---------------------------------------------------------------------------
+def best_pusher_guess(text: str) -> dict:
+    """เลือกค่าที่น่าเชื่อถือที่สุดจากข้อความที่วางมา (แชท/ล็อก/ไฟล์/หน้าเว็บ)"""
+    urls: list[str] = []
+    for match in re.finditer(r"wss?://[^\s\"'`,)]+", text):
+        url = match.group(0).rstrip(".,;")
+        if "pusher" in url.lower() or re.search(r"/app/[0-9a-zA-Z]{8,}", url):
+            if url not in urls:
+                urls.append(url)
+
+    keys: list[str] = []
+    for match in re.finditer(r"\b([0-9a-fA-F]{32})\b", text):
+        key = match.group(1)
+        if key not in keys:
+            keys.append(key)
+
+    clusters: list[str] = []
+    for match in re.finditer(r"\bws-([a-z0-9]+)\.pusher\.com\b", text, re.I):
+        cluster = match.group(1).lower()
+        if cluster not in clusters:
+            clusters.append(cluster)
+    for match in re.finditer(r"(?:cluster|PUSHER_CLUSTER)[\"'\s:=]+[\"']?([a-z]{2,4}\d?)", text, re.I):
+        cluster = match.group(1).lower()
+        if cluster in CLUSTER_HOSTS and cluster not in clusters:
+            clusters.append(cluster)
+
+    def url_score(url: str) -> tuple:
+        # host สำคัญสุด: cluster ของ Kick คือ us2 — ถ้า log มีหลาย URL ให้เลือกตัวที่ชี้ us2
+        parsed = urllib.parse.urlparse(url)
+        key_in_url = re.search(r"/app/([0-9a-zA-Z]+)", parsed.path or "")
+        key = key_in_url.group(1) if key_in_url else ""
+        return (
+            2 if "ws-us2" in (parsed.hostname or "") else 0,
+            1 if "protocol=7" in url else 0,
+            1 if key.lower() == DEFAULT_APP_KEY else 0,
+        )
+
+    best_url = max(urls, key=url_score) if urls else ""
+    cluster = ""
+    key = ""
+    if best_url:
+        cluster, key, _host = parse_ws_url(best_url)
+    if not key:
+        # ไม่เจอ key ในข้อความเลย → ใช้ key สาธารณะ (ค่าที่ Kick ใช้จริง)
+        key = DEFAULT_APP_KEY if DEFAULT_APP_KEY in keys else (keys[0] if keys else DEFAULT_APP_KEY)
+    if not cluster:
+        cluster = "us2" if "us2" in clusters else (clusters[0] if clusters else DEFAULT_CLUSTER)
+
+    return {
+        "urls_found": urls,
+        "keys_found": keys,
+        "clusters_found": clusters,
+        "best_url": best_url or build_ws_url(cluster, key),
+        "cluster": cluster,
+        "app_key": key,
+    }
+
+
+def canonical_pusher() -> dict:
+    """ค่ามาตรฐานที่ Kick ใช้จริง (public key บน cluster us2)"""
+    return {"cluster": "us2", "app_key": DEFAULT_APP_KEY, "ws_url": build_ws_url("us2", DEFAULT_APP_KEY)}
+
+
+def cmd_extract(args) -> int:
+    if args.text:
+        text = args.text
+        source = "argument --text"
+    elif args.file:
+        path = Path(args.file).expanduser()
+        if not path.is_file():
+            fail(f"ไม่พบไฟล์: {path}")
+        text = path.read_text(encoding="utf-8", errors="replace")
+        source = str(path)
+    else:
+        if sys.stdin.isatty():
+            print("วางข้อความที่ต้องการให้แกะค่า แล้วกด Ctrl+Z (Windows) หรือ Ctrl+D (Linux) แล้ว Enter:", file=sys.stderr)
+        text = sys.stdin.read()
+        source = "stdin"
+
+    print(f"=== แกะค่า pusher จาก {source} ({len(text)} ตัวอักษร) ===")
+    guess = best_pusher_guess(text)
+    if not guess["urls_found"] and not guess["keys_found"] and not guess["clusters_found"]:
+        warn("ไม่พบ URL/key/cluster ของ pusher ในข้อความนี้เลย")
+        warn(f"ตัวอย่างที่ควรมี: wss://ws-us2.pusher.com/app/{DEFAULT_APP_KEY}?protocol=7")
+        return 1
+
+    print(f"      URL ที่เจอ    : {len(guess['urls_found'])}")
+    for url in guess["urls_found"][:8]:
+        print(f"        - {url}")
+    if guess["keys_found"]:
+        print(f"      key ที่เจอ    : {', '.join(mask(k, 10) for k in guess['keys_found'][:8])}")
+    if guess["clusters_found"]:
+        print(f"      cluster ที่เจอ: {', '.join(guess['clusters_found'])}")
+    print()
+    print("ค่าที่เลือกใช้:")
+    print(json.dumps({
+        "cluster": guess["cluster"],
+        "app_key": guess["app_key"],
+        "ws_url": guess["best_url"],
+    }, ensure_ascii=False, indent=2))
+
+    canonical = canonical_pusher()
+    same_as_canonical = (guess["cluster"] == canonical["cluster"]
+                         and guess["app_key"].lower() == canonical["app_key"].lower())
+    if guess["app_key"] and guess["app_key"].lower() not in (DEFAULT_APP_KEY, *FALLBACK_APP_KEYS):
+        warn(f"key ที่พบไม่ใช่ key สาธารณะที่รู้จัก ({mask(DEFAULT_APP_KEY, 10)}) — มักเกิดจากการเอา OAuth client_id มาใส่ช่อง appKey")
+        print()
+        print("ค่ามาตรฐานที่ Kick ใช้จริง (ถ้าใช้ค่านี้จะต่อได้แน่):")
+        print(json.dumps(canonical, ensure_ascii=False, indent=2))
+
+    chosen = {"cluster": guess["cluster"], "app_key": guess["app_key"], "ws_url": guess["best_url"]}
+    if args.probe:
+        print()
+        print("--- ทดสอบเชื่อมต่อ ---")
+        status, detail = probe_once(chosen["ws_url"], args.timeout)
+        print(f"      ค่าจากข้อความ  -> {status}: {detail}")
+        if not same_as_canonical:
+            c_status, c_detail = probe_once(canonical["ws_url"], args.timeout)
+            print(f"      ค่ามาตรฐาน us2 -> {c_status}: {c_detail}")
+            if c_status == "ok" and status != "ok":
+                ok("ค่ามาตรฐานใช้ได้ (ค่าจากข้อความใช้ไม่ได้) — จะใช้ค่ามาตรฐานในการแก้ไฟล์")
+                chosen = canonical
+        elif status != "ok":
+            warn("ค่ามาตรฐานก็ยังต่อไม่ได้ — น่าจะเป็นปัญหาเส้นทาง/เน็ต (ดูคำสั่ง report)")
+
+    if args.config_file:
+        if args.apply:
+            try:
+                changes = patch_config_file(Path(args.config_file).expanduser(), {
+                    "cluster": chosen["cluster"], "app_key": chosen["app_key"], "ws_url": chosen["ws_url"],
+                }, backup=not args.no_backup)
+            except (OSError, ValueError, json.JSONDecodeError) as exc:
+                fail(f"แก้ไฟล์ไม่สำเร็จ: {exc}")
+            if changes:
+                ok(f"แก้ไฟล์แล้ว: {args.config_file}")
+                print(f"      สำรอง: {changes.get('_backup', '(ไม่ได้สำรอง)')}")
+            else:
+                ok("ไฟล์มีค่าตรงกันอยู่แล้ว")
+        else:
+            info(f"เพิ่ม --apply เพื่อเขียนค่าลง {args.config_file} (จะสำรอง .bak ให้)")
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# คำสั่ง: report — รวมข้อมูลวินิจฉัยเป็นบล็อกเดียวสำหรับส่งต่อ
+# ---------------------------------------------------------------------------
+def _run_cmd(cmd: list[str], timeout: float = 15.0) -> str:
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return ((proc.stdout or "") + (proc.stderr or "")).strip()
+
+
+def python_processes() -> str:
+    """รายการ process python ที่กำลังรัน (ช่วยเผย process เก่าที่ค้างอยู่)"""
+    if os.name == "nt":
+        parts = []
+        for image in ("python.exe", "pythonw.exe"):
+            out = _run_cmd(["tasklist", "/FI", f"IMAGENAME eq {image}", "/FO", "CSV", "/NH"])
+            if out and "no tasks" not in out.lower():
+                parts.append(out)
+        detail = _run_cmd([
+            "powershell", "-NoProfile", "-Command",
+            "Get-CimInstance Win32_Process -Filter \"Name='python.exe' or Name='pythonw.exe'\" | "
+            "Select-Object ProcessId,CreationDate,CommandLine | Format-List",
+        ])
+        if not detail:
+            detail = _run_cmd([
+                "wmic", "process", "where", "name='python.exe'",
+                "get", "ProcessId,CreationDate,CommandLine", "/format:list",
+            ])
+        if detail:
+            parts.append(detail)
+        return "\n".join(parts) or "(ไม่พบ process python)"
+    out = _run_cmd(["ps", "-eo", "pid,ppid,etime,cmd"])
+    return _filter_ps_output(out, os.getpid())
+
+
+def _filter_ps_output(out: str, own_pid: int) -> str:
+    """กรอง ps output ให้เหลือแต่ process python ที่ไม่ใช่ตัวสคริปต์เอง/เชลล์ที่ห่อคำสั่ง"""
+    lines: list[str] = []
+    for line in out.splitlines():
+        if "python" not in line.lower():
+            continue
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        pid, cmd = parts[0], parts[3]
+        if pid == str(own_pid):
+            continue
+        if cmd.startswith(("/bin/sh", "/bin/bash", "bash -", "sh -", "ps -eo")):
+            continue
+        if "kick_chat.py report" in cmd:
+            continue
+        lines.append(line)
+    return "\n".join(lines) or "(ไม่พบ process python อื่นนอกจากตัวสคริปต์เอง)"
+
+
+def collect_secrets() -> list[str]:
+    """รวบรวมค่าลับที่มีในเครื่อง เพื่อลบออกจากรายงานก่อนแสดง"""
+    secrets: list[str] = []
+    for name in ("kick_credentials.json", "kick_credentials.env", "credentials.json", ".env"):
+        for base in (SCRIPT_DIR, Path.cwd()):
+            path = base / name
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for match in re.finditer(r"(?:client_?secret|secret)[\"'\s:=]+([^\s\"',}]+)", text, re.I):
+                value = match.group(1).strip()
+                if len(value) >= 8:
+                    secrets.append(value)
+    for base in (SCRIPT_DIR, Path.cwd()):
+        path = base / "kick_tokens.json"
+        if not path.is_file():
+            continue
+        try:
+            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(data, dict):
+            for field in ("client_secret", "access_token", "refresh_token"):
+                value = data.get(field)
+                if isinstance(value, str) and len(value) >= 8:
+                    secrets.append(value)
+    return list(dict.fromkeys(secrets))
+
+
+def redact(text: str, secrets: list[str], mask_keys: bool = True) -> str:
+    for secret in secrets:
+        if secret:
+            text = text.replace(secret, "***REDACTED***")
+    if mask_keys:
+        text = re.sub(r"\b([0-9a-fA-F]{32})\b", lambda m: mask(m.group(1), 8), text)
+    return text
+
+
+def cmd_report(args) -> int:
+    secrets = collect_secrets()
+    lines: list[str] = []
+    add = lines.append
+
+    add("=== KICK CHAT REPORT (คัดลอกทั้งบล็อกนี้ส่งกลับมาได้เลย) ===")
+    add(f"เวลา        : {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    add(f"ระบบ        : {sys.platform} / Python {sys.version.split()[0]}")
+    add(f"โฟลเดอร์     : {SCRIPT_DIR}")
+
+    add("")
+    add("--- process python ที่กำลังรัน ---")
+    add(python_processes())
+
+    add("")
+    add("--- config ---")
+    path = config_path(args.config)
+    add(f"ไฟล์ config  : {path} ({'พบ' if path.is_file() else 'ไม่พบ'})")
+    cfg = load_config(path)
+    settings = extract_pusher_settings(cfg) if cfg else {}
+    if settings:
+        add(f"ค่าที่อ่านได้  : {json.dumps({k: v for k, v in settings.items() if k != 'paths'}, ensure_ascii=False)}")
+        add(f"มาจากฟิลด์    : {json.dumps(settings.get('paths', {}), ensure_ascii=False)}")
+    else:
+        add("ค่าที่อ่านได้  : (ไม่พบค่า pusher ในไฟล์)")
+
+    add("")
+    add("--- token (ไม่ใช้กับ Pusher — ใช้เฉพาะตอนส่งข้อความ) ---")
+    tokens_file = Path(args.tokens).expanduser() if args.tokens else SCRIPT_DIR / "kick_tokens.json"
+    ko = _oauth_module()
+    tokens = ko.load_tokens(tokens_file)
+    if tokens.get("access_token"):
+        add(f"ไฟล์ token   : {tokens_file} (พบ)")
+        add(f"scope       : {tokens.get('scope') or '(ไม่ระบุ)'}")
+        add(f"อายุ         : {ko.token_expiry_text(tokens)}")
+        add(f"มี refresh   : {'มี' if tokens.get('refresh_token') else 'ไม่มี'}")
+    else:
+        add(f"ไฟล์ token   : {tokens_file} (ไม่พบ token — ต้องรัน kick_oauth.py login)")
+
+    add("")
+    add("--- สิ่งที่อาจดัก/แก้เส้นทาง ---")
+    hits = hosts_file_hits("pusher")
+    add(f"hosts file   : {hits if hits else 'ไม่มีการแก้ที่เกี่ยวกับ pusher'}")
+    proxies = proxy_env()
+    add(f"proxy env    : {proxies if proxies else 'ไม่มี'}")
+    candidates: list[str] = []
+    if settings:
+        candidates.append(host_from_settings(settings))
+    candidates += ["ws-us2.pusher.com", "ws-eu.pusher.com"]
+    for host in dict.fromkeys(h for h in candidates if h):
+        ips = resolve_host(host)
+        flag = "  <-- IP วงใน (ผิดปกติ)" if ips and all(is_private_ip(ip) for ip in ips) else ""
+        add(f"DNS {host:<20}: {', '.join(ips) if ips else '(resolve ไม่ได้)'}{flag}")
+
+    add("")
+    add("--- ทดสอบเชื่อมต่อ Pusher จริง (ดูข้อความ error ว่ามันบอก key อะไร) ---")
+    tests: list[tuple[str, str]] = []
+    configured_key = str(settings.get("app_key") or "") if settings else ""
+    configured_cluster = str(settings.get("cluster") or "") if settings else ""
+    if settings.get("ws_url"):
+        tests.append(("ตาม config (wsUrl)", settings["ws_url"]))
+    if configured_key or configured_cluster:
+        tests.append((
+            f"ตาม config (cluster={configured_cluster or 'us2'})",
+            build_ws_url(configured_cluster or DEFAULT_CLUSTER, configured_key or DEFAULT_APP_KEY),
+        ))
+    tests.append(("มาตรฐาน us2 + key สาธารณะ", build_ws_url("us2", DEFAULT_APP_KEY)))
+    if not args.fast:
+        tests.append(("เทียบ ws-eu + key สาธารณะ (control)", build_ws_url("eu", DEFAULT_APP_KEY)))
+
+    for label, url in tests:
+        parsed = urllib.parse.urlparse(url)
+        key_match = re.search(r"/app/([0-9a-zA-Z]+)", parsed.path or "")
+        key_shown = mask(key_match.group(1), 8) if key_match else "?"
+        try:
+            status, detail = probe_once(url, args.timeout)
+        except SystemExit:
+            status, detail = "error", "(โปรแกรมออกกลางทาง)"
+        add(f"{label}:")
+        add(f"   {parsed.hostname} key {key_shown} -> {status}: {detail}")
+        if key_match and key_match.group(1).lower() not in (DEFAULT_APP_KEY, *FALLBACK_APP_KEYS):
+            add(f"   (หมายเหตุ: key ข้างบนไม่ใช่ key สาธารณะ {DEFAULT_APP_KEY})")
+    add("")
+    add("ตรวจให้ครบ 3 อย่างในข้อความ error: (1) key ที่ Pusher พูดถึง (2) host ที่ต่อ (3) ใครเป็นคนรัน")
+    add("=== จบบล็อกรายงาน ===")
+
+    print(redact("\n".join(lines), secrets, mask_keys=not args.show_keys))
+    warn("รายงานนี้ปิดบัง client secret / token ให้แล้ว (key ถูกย่อเหลือ 8 ตัวแรก)")
+    warn("อย่าใช้ --show-keys แล้วส่งต่อในที่สาธารณะ")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
@@ -1525,7 +1860,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Kick chat (Pusher WebSocket) — วินิจฉัย cluster, ซ่อม config, ฟังแชท, ส่งข้อความ",
         parents=[common],
     )
-    sub = parser.add_subparsers(dest="command", metavar="{probe,discover,resolve,listen,send,doctor,fix-config,scan}")
+    sub = parser.add_subparsers(dest="command", metavar="{probe,discover,resolve,listen,send,doctor,fix-config,scan,extract,report}")
 
     p = sub.add_parser("probe", parents=[common], help="ทดสอบทุก cluster ว่าอันไหนใช้ได้")
     p.add_argument("--all", action="store_true", help="ทดสอบทุก cluster (ไม่หยุดที่ตัวแรก)")
@@ -1583,13 +1918,31 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--path", required=True, help="โฟลเดอร์ที่ต้องการสแกน เช่น D:\\HermesAI\\OBS")
     p.add_argument("--exts", help="นามสกุลไฟล์ที่สนใจ คั่นด้วยจุลภาค (ค่าเริ่มต้น: รายการที่พบทั่วไป)")
     p.set_defaults(func=cmd_scan)
+
+    p = sub.add_parser("extract", parents=[common],
+                       help="วางข้อความ/ล็อก/URL อะไรก็ได้ แล้วให้แกะค่า pusher (กันคัดลอกผิดช่อง)")
+    p.add_argument("--text", help="ข้อความที่ต้องการแกะ")
+    p.add_argument("--file", help="ไฟล์ที่ต้องการแกะ (เช่นไฟล์ .txt ที่วาง URL ไว้)")
+    p.add_argument("--probe", action="store_true", help="ทดสอบเชื่อมต่อค่าที่แกะได้")
+    p.add_argument("--config-file", dest="config_file", help="ไฟล์ config ที่ต้องการให้แก้")
+    p.add_argument("--apply", action="store_true", help="เขียนค่าลง config file จริง")
+    p.add_argument("--no-backup", action="store_true", help="ไม่ต้องสำรองไฟล์ก่อนแก้")
+    p.set_defaults(func=cmd_extract)
+
+    p = sub.add_parser("report", parents=[common],
+                       help="รวมรายงานวินิจฉัย (process/config/token/hosts/DNS/probe) เป็นบล็อกเดียว")
+    p.add_argument("--tokens", help="ไฟล์ token (ค่าเริ่มต้น kick_tokens.json)")
+    p.add_argument("--fast", action="store_true", help="ไม่ต้องทดสอบ cluster เทียบ (เร็วขึ้น)")
+    p.add_argument("--show-keys", dest="show_keys", action="store_true",
+                   help="แสดง key เต็มในรายงาน (อย่าส่งต่อที่สาธารณะ)")
+    p.set_defaults(func=cmd_report)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     _fix_stdout()
     argv = list(sys.argv[1:] if argv is None else argv)
-    commands = {"probe", "discover", "resolve", "listen", "send", "doctor", "fix-config", "scan"}
+    commands = {"probe", "discover", "resolve", "listen", "send", "doctor", "fix-config", "scan", "extract", "report"}
     if not argv or (argv[0].startswith("-") and argv[0] not in ("-h", "--help")):
         argv = ["doctor"] + argv
     parser = build_parser()

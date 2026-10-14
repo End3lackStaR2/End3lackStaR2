@@ -8,6 +8,6 @@ Config files for my GitHub profile.
 - **[kick_oauth.py](kick_oauth.py)** — CLI ตัวช่วย: `setup` / `login` / `check` / `refresh` / `revoke` (Python 3.10+, ไม่ต้องติดตั้งแพ็กเกจเพิ่ม)
 - **`tests/`** — ชุดทดสอบออฟไลน์: `python tests/test_kick_oauth.py` และ `python tests/test_kick_chat.py`
 - **[kick-chat-fix.md](kick-chat-fix.md)** — แก้ error `App key ... not in this cluster` (Kick chat ใช้ Pusher cluster **us2**)
-- **[kick_chat.py](kick_chat.py)** — ตรวจ cluster อัตโนมัติ, ฟังแชทสด (`listen`), ส่งข้อความ (`send`), `doctor`/`probe`/`resolve`
+- **[kick_chat.py](kick_chat.py)** — วินิจฉัย/ซ่อม config (`report`, `fix-config`, `scan`, `extract`, `probe`), ฟังแชทสด (`listen`), ส่งข้อความ (`send`), `resolve`
 
 > ไฟล์ `kick_credentials.json` / `kick_tokens.json` เป็นข้อมูลลับ ถูกกันไว้ใน `.gitignore` แล้ว

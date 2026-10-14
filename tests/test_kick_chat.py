@@ -800,5 +800,169 @@ def test_scan_text_for_pusher_dedupes() -> None:
     assert hits[0][1].startswith("wsUrl = ")
 
 
+def test_extract_prefers_us2_host_over_key() -> None:
+    text = (
+        "Attempting: wss://ws-us2.pusher.com/app/0139bca5f0e1c1c7f4b0aa11?protocol=7\n"
+        f"also: wss://ws-eu.pusher.com/app/{GOOD_KEY}?protocol=7\n"
+        "cluster: us2\n"
+    )
+    guess = kc.best_pusher_guess(text)
+    assert guess["cluster"] == "us2", guess
+    assert "ws-us2" in guess["best_url"]
+    assert guess["app_key"] == "0139bca5f0e1c1c7f4b0aa11"
+    assert len(guess["urls_found"]) == 2
+
+
+def test_extract_falls_back_to_public_key() -> None:
+    guess = kc.best_pusher_guess("logging in... chatroom 999")
+    assert guess["app_key"] == GOOD_KEY
+    assert guess["cluster"] == "us2"
+    assert guess["best_url"].startswith("wss://ws-us2.pusher.com/app/")
+
+
+def test_cmd_extract_switches_to_working_canonical() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg_path = Path(tmpdir) / "config.json"
+        cfg_path.write_text(json.dumps({"pusher": {"cluster": "us2", "appKey": BAD_KEY}}), encoding="utf-8")
+        clip = f"ws://ws-us2.pusher.com/app/{BAD_KEY}?protocol=7\n"
+
+        original_probe = kc.probe_once
+
+        def fake_probe(url, timeout):
+            return ("ok", "{}") if GOOD_KEY in url else ("wrong-cluster", "App key ... not in this cluster")
+
+        kc.probe_once = fake_probe
+        try:
+            args = argparse.Namespace(
+                config=None, app_key=None, clusters=None, timeout=2.0, all=False, ws_url=None,
+                text=clip, file=None, probe=True, config_file=str(cfg_path), apply=True, no_backup=False,
+            )
+            out = io.StringIO()
+            with redirect_stdout(out):
+                rc = kc.cmd_extract(args)
+            text = out.getvalue()
+            assert rc == 0, text
+            assert "ค่ามาตรฐานใช้ได้" in text
+
+            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+            assert data["pusher"]["appKey"] == GOOD_KEY, "ต้องสลับไปใช้ key ที่ต่อได้"
+            assert data["pusher"]["cluster"] == "us2"
+        finally:
+            kc.probe_once = original_probe
+
+
+def test_cmd_extract_keeps_found_values_when_they_work() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg_path = Path(tmpdir) / "config.json"
+        cfg_path.write_text("{}", encoding="utf-8")
+        clip = f"ws://ws-us2.pusher.com/app/{GOOD_KEY}?protocol=7"
+
+        original_probe = kc.probe_once
+        kc.probe_once = lambda url, timeout: ("ok", "{}")
+        try:
+            args = argparse.Namespace(
+                config=None, app_key=None, clusters=None, timeout=2.0, all=False, ws_url=None,
+                text=clip, file=None, probe=True, config_file=str(cfg_path), apply=True, no_backup=False,
+            )
+            out = io.StringIO()
+            with redirect_stdout(out):
+                rc = kc.cmd_extract(args)
+            assert rc == 0
+            data = json.loads(cfg_path.read_text(encoding="utf-8"))
+            assert data["pusher"]["appKey"] == GOOD_KEY
+            assert "ค่ามาตรฐานใช้ได้" not in out.getvalue()
+        finally:
+            kc.probe_once = original_probe
+
+
+def test_filter_ps_output() -> None:
+    raw = "\n".join([
+        "  111     1  00:05 /bin/bash -l -c cd /tmp && python3 kick_chat.py report",
+        "  222   111  00:04 python3 /home/user/End3lackStaR2/kick_chat.py listen --chatroom 42",
+        "  333     1  12:00 ps -eo pid,ppid,etime,cmd",
+        "  444     1  03:00 /usr/bin/python3 /home/user/End3lackStaR2/kick_chat.py report --fast",
+        "  555     1  00:01 grep python",
+    ])
+    filtered = kc._filter_ps_output(raw, own_pid=999)
+    assert "listen --chatroom 42" in filtered
+    assert "bash -l -c" not in filtered
+    assert "ps -eo" not in filtered
+    assert "kick_chat.py report" not in filtered
+    assert kc._filter_ps_output("no python here", own_pid=1).startswith("(ไม่พบ process python")
+
+
+def test_cmd_report_redacts_and_summarises() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        cfg_path = root / "kick_chat_config.json"
+        cfg_path.write_text(json.dumps({
+            "pusher": {"cluster": "us2", "appKey": BAD_KEY},
+        }), encoding="utf-8")
+        creds = root / "kick_credentials.json"
+        creds.write_text(json.dumps({"client_id": GOOD_KEY, "client_secret": "s3cr3t-value-should-not-leak"}),
+                         encoding="utf-8")
+        tokens = root / "kick_tokens.json"
+        tokens.write_text(json.dumps({"access_token": "tok-should-not-leak-123456", "refresh_token": "ref",
+                                      "scope": "chat:write", "expires_at": int(time.time()) + 600}), encoding="utf-8")
+
+        original = (kc.SCRIPT_DIR, kc.probe_once, kc.python_processes, kc.HOSTS_FILES)
+        kc.SCRIPT_DIR = root
+        kc.probe_once = lambda url, timeout: ("wrong-cluster", f"App key {BAD_KEY} not in this cluster")
+        kc.python_processes = lambda: "1234  python.exe kick_chat.py listen --chatroom 42"
+        kc.HOSTS_FILES = (root / "no-hosts",)
+        try:
+            args = argparse.Namespace(config=str(cfg_path), tokens=str(tokens), fast=True, show_keys=False,
+                                     timeout=2.0, app_key=None, clusters=None, all=False, ws_url=None)
+            out, err = io.StringIO(), io.StringIO()
+            from contextlib import redirect_stderr
+
+            with redirect_stdout(out), redirect_stderr(err):
+                rc = kc.cmd_report(args)
+            text = out.getvalue()
+            assert rc == 0
+            assert "KICK CHAT REPORT" in text
+            assert "chat.message" not in text  # ไม่ควรมีข้อมูลแปลกปลอม
+            assert "s3cr3t-value-should-not-leak" not in text, "client secret ต้องถูกปิด"
+            assert "tok-should-not-leak-123456" not in text, "access token ต้องถูกปิด"
+            assert "scope       : chat:write" in text
+            assert "listen --chatroom 42" in text, "ต้องเห็น process ที่ค้างอยู่"
+            assert f"{BAD_KEY[:8]}..." in text, "key ต้องถูกย่อ"
+            assert "not in this cluster" in text, "ต้องเห็นข้อความ error จาก Pusher"
+            assert "OAuth client_id" in text or "key ข้างบน" in text
+        finally:
+            kc.SCRIPT_DIR, kc.probe_once, kc.python_processes, kc.HOSTS_FILES = original
+
+
+def test_cmd_report_show_keys_reveals() -> None:
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        cfg_path = root / "kick_chat_config.json"
+        cfg_path.write_text(json.dumps({"cluster": "us2", "appKey": GOOD_KEY}), encoding="utf-8")
+        original = (kc.SCRIPT_DIR, kc.probe_once, kc.python_processes, kc.HOSTS_FILES)
+        kc.SCRIPT_DIR = root
+        kc.probe_once = lambda url, timeout: ("ok", "{}")
+        kc.python_processes = lambda: "(ไม่มี)"
+        kc.HOSTS_FILES = (root / "no-hosts",)
+        try:
+            args = argparse.Namespace(config=str(cfg_path), tokens=str(root / "none.json"), fast=True,
+                                     show_keys=True, timeout=2.0, app_key=None, clusters=None, all=False, ws_url=None)
+            out = io.StringIO()
+            from contextlib import redirect_stderr
+
+            with redirect_stdout(out), redirect_stderr(io.StringIO()):
+                kc.cmd_report(args)
+            assert GOOD_KEY in out.getvalue()
+        finally:
+            kc.SCRIPT_DIR, kc.probe_once, kc.python_processes, kc.HOSTS_FILES = original
+
+
 if __name__ == "__main__":
     raise SystemExit(main())
