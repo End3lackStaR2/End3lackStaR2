@@ -632,12 +632,14 @@ function Invoke-KeyProbe {
     $SCRIPT:Evidence.PrimaryProbe = $primary
     $SCRIPT:Evidence.FallbackProbe = $fallback
 
-    if ($primary.connected) { return $T.PrimaryKey }
+    if ($primary.connected) { $SCRIPT:Evidence.WorkingKey = $T.PrimaryKey; return $T.PrimaryKey }
     if ($fallback.connected) {
         Warn "new key failed but the legacy key still connects - keeping the new key as primary anyway (Kick says the old one is going away) but both are stored." `
              'key ใหม่ไม่ผ่าน แต่ key เก่ายังต่อได้ - ยังเก็บ key ใหม่เป็นตัวหลัก (Kick แจ้งว่า key เก่ากำลังถูกปิด) และเก็บทั้งสองตัว'
+        $SCRIPT:Evidence.WorkingKey = $T.PrimaryKey
         return $T.PrimaryKey
     }
+    $SCRIPT:Evidence.WorkingKey = ''
     return ''
 }
 
@@ -962,6 +964,40 @@ function Wait-ForEvidence {
 # Reports
 # ---------------------------------------------------------------------------
 
+function Write-ResultLine {
+    param([hashtable]$T, [string]$Verdict, $NewAnalysis = $null)
+    $ev = [ordered]@{}
+    if ($NewAnalysis) {
+        $ev = [ordered]@{
+            lines       = $NewAnalysis.lines
+            connected   = $NewAnalysis.connected
+            subscribed  = $NewAnalysis.subscribed
+            messages    = $NewAnalysis.messages
+            key_rejected = $NewAnalysis.key_rejected
+        }
+    }
+    $doc = [ordered]@{
+        verdict     = $Verdict
+        key_primary = $T.PrimaryKey
+        key_fallback = $T.FallbackKey
+        working_key = [string]$SCRIPT:Evidence.WorkingKey
+        install_dir = $T.InstallDir
+        log_path    = $T.LogPath
+        report      = (Join-Path $T.FilesDir 'hermes_report_TH.txt')
+        new_evidence = $ev
+        warnings    = $SCRIPT:WarnCount
+        failures    = $SCRIPT:FailCount
+        ran_at_utc  = (Get-Date).ToUniversalTime().ToString('s') + 'Z'
+    }
+    $json = $doc | ConvertTo-Json -Compress -Depth 6
+    $SCRIPT:Evidence.ResultJson = $json
+    if (-not $Quiet) {
+        Write-Line ''
+        Write-Line 'RESULT_JSON (copy this one line back):' 'White'
+        Write-Line $json 'White'
+    }
+}
+
 function Write-Reports {
     param([hashtable]$T, [string]$Verdict, $NewAnalysis, $OldAnalysis)
     $stamp = Get-Date
@@ -1087,6 +1123,7 @@ function Invoke-Doctor {
     }
     Show-NextSteps $t 'NO_FRESH_EVIDENCE'
     Write-Reports -T $t -Verdict 'DIAGNOSED' -NewAnalysis $null -OldAnalysis $SCRIPT:Evidence.OldLog | Out-Null
+    Write-ResultLine -T $t -Verdict 'DIAGNOSED'
     if ($SCRIPT:FailCount -gt 0) { return 1 }
     return 0
 }
@@ -1116,6 +1153,7 @@ function Invoke-Verify {
     }
     Show-NextSteps $t $verdict
     Write-Reports -T $t -Verdict $verdict -NewAnalysis $null -OldAnalysis $old | Out-Null
+    Write-ResultLine -T $t -Verdict $verdict
     if ($verdict -eq 'KEY_REJECTED') { return 2 }
     if ($verdict -eq 'NO_FRESH_EVIDENCE') { return 1 }
     return 0
@@ -1202,6 +1240,7 @@ function Invoke-Fix {
     elseif ($verdict -eq 'KEY_REJECTED') { Fail 'VERDICT: KEY_REJECTED' 'สรุป: key ถูกปฏิเสธ' }
     else { Warn 'VERDICT: NO_FRESH_EVIDENCE' 'สรุป: ยังไม่มีหลักฐานใหม่' }
     Write-Reports -T $t -Verdict $verdict -NewAnalysis $newA -OldAnalysis $old | Out-Null
+    Write-ResultLine -T $t -Verdict $verdict -NewAnalysis $newA
     if ($verdict -eq 'OK') { return 0 }
     if ($verdict -eq 'KEY_REJECTED') { return 2 }
     return 1
@@ -1225,6 +1264,10 @@ function Invoke-Logs {
     Write-Line ''
     $a = Analyze-LogText -Lines $slice.Lines
     Show-LogAnalysis $a 'log'
+    $v = 'NO_FRESH_EVIDENCE'
+    if ($a.key_rejected -gt 0) { $v = 'KEY_REJECTED' }
+    elseif ($a.subscribed -gt 0 -or $a.messages -gt 0 -or $a.connected -gt 0) { $v = 'OK' }
+    Write-ResultLine -T $t -Verdict $v -NewAnalysis $a
     if ($a.key_rejected -gt 0) { return 2 }
     if ($a.subscribed -gt 0 -or $a.messages -gt 0) { return 0 }
     return 1
@@ -1249,6 +1292,7 @@ function Invoke-Report {
         Info ("kick_pusher.json updated: $($keys.updated_at_utc), verified_key=$($keys.verified_key)") ("kick_pusher.json อัปเดต: $($keys.updated_at_utc), verified_key=$($keys.verified_key)")
     }
     $r = Write-Reports -T $t -Verdict $verdict -NewAnalysis $null -OldAnalysis $old
+    Write-ResultLine -T $t -Verdict $verdict
     if ($Open -and $r -and (Test-Path -LiteralPath $r.Thai)) { try { Start-Process notepad.exe $r.Thai } catch { } }
     if ($verdict -eq 'KEY_REJECTED') { return 2 }
     if ($verdict -eq 'OK') { return 0 }

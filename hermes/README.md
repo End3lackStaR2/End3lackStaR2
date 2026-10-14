@@ -32,6 +32,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$d\hermes.ps1" doctor
 powershell -NoProfile -ExecutionPolicy Bypass -File "$d\hermes.ps1" fix -Open
 ```
 
+> **บรรทัดส่งกลับ**: ทุกโหมดจะพิมพ์บรรทัดเดียวจบหน้าจอว่า
+> `RESULT_JSON {"verdict":"...","working_key":"...","log_path":"...",...}`
+> คัดลอกบรรทัดนั้นส่งกลับมาได้เลย — ไม่ต้องสรุปความ (ถ้าอยากได้หลักฐานเพิ่ม ใช้ `-Open` เปิดรายงานไทย)
+
 หลังรันเสร็จจะได้:
 
 | ไฟล์ | คืออะไร |
@@ -45,6 +49,27 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$d\hermes.ps1" fix -Open
 > **ไม่แน่ใจ?** รัน `hermes.cmd fix -DryRun` หรือ `hermes.ps1 fix -DryRun` ก่อน — จะโชว์ทุกอย่างที่จะเปลี่ยนโดยไม่เขียนไฟล์
 
 ---
+
+### ถ้าคัดลอกจากแชทแล้ว URL ติดอักขระ markdown ( `[` `]` `(` `)` )
+
+แชทบางตัวจะห่อ URL เป็นลิงก์ ถ้าวางทั้งบล็อกลง PowerShell ตัว `$u` จะมี `[]()` ติดมาด้วย
+ให้ใช้ท่อนนี้แทน (มันตัดอักขระส่วนเกินออก และตรวจไฟล์ที่โหลดได้ก่อนใช้งานจริง):
+
+```powershell
+$u  = 'https://github.com/End3lackStaR2/End3lackStaR2/raw/9d3506fbb146c8f61e1f5bfaa3289de4573d30f6/hermes'.Trim()
+$u  = $u -replace '^\[|\]$', '' -replace '\]\(.*\)$', ''      # กัน markdown link ติดมา
+$d  = "$env:USERPROFILE\hermes-kick"; New-Item -ItemType Directory -Force -Path $d | Out-Null
+iwr -UseBasicParsing "$u/hermes.ps1" -OutFile "$d\hermes.ps1"
+$raw = Get-Content "$d\hermes.ps1" -Raw
+if ($raw.Length -lt 50000 -or $raw -notmatch 'hermes\.ps1 v' -or $raw -notmatch 'VERDICT') {
+    Write-Host 'ดาวน์โหลดไม่ครบ/ผิดไฟล์ - ลองใหม่จาก zip' -ForegroundColor Yellow
+    $z = "$env:TEMP\End3lackStaR2.zip"
+    iwr -UseBasicParsing 'https://codeload.github.com/End3lackStaR2/End3lackStaR2/zip/9d3506fbb146c8f61e1f5bfaa3289de4573d30f6' -OutFile $z
+    Expand-Archive $z -DestinationPath "$env:TEMP\ebs" -Force
+    Copy-Item "$env:TEMP\ebs\End3lackStaR2-*\hermes\hermes.ps1" "$d\hermes.ps1" -Force
+}
+Write-Host ("พร้อมใช้: " + (Get-Item "$d\hermes.ps1").Length + " bytes")
+```
 
 ## โหมดต่าง ๆ
 
