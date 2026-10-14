@@ -175,6 +175,16 @@ Write-Host ("RESULT_JSON " + (@{ verdict = $v; log_path = $log; new_lines = $lin
 
 ## ท่อน 5 — เก็บหลักฐานส่งกลับ (ไฟล์เดียว)
 
+> ถ้าโหลดเครื่องมือเต็มได้แล้ว (ท่อน 0) ใช้ตัวช่วยที่ฉลาดกว่า — มันปิดข้อมูลลับให้เองและรวมทุกอย่างในไฟล์เดียว:
+> ```powershell
+> $h = Join-Path $env:USERPROFILE 'hermes-kick\report-evidence.ps1'
+> powershell -NoProfile -ExecutionPolicy Bypass -File $h -AppDir 'D:\HermesAI\OBS' -Zip -Open
+> ```
+> หรือส่งขึ้น GitHub ตรง ๆ (ใช้ credential ของ git ที่มีอยู่ ไม่ต้องวาง token ในแชท):
+> ```powershell
+> powershell -NoProfile -ExecutionPolicy Bypass -File $h -AppDir 'D:\HermesAI\OBS' -Repo 'End3lackStaR2/End3lackStaR2'
+> ```
+
 ```powershell
 $app = 'D:\HermesAI\OBS'
 $out = "$env:USERPROFILE\Desktop\hermes-evidence.txt"

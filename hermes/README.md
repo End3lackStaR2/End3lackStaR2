@@ -71,6 +71,32 @@ if ($raw.Length -lt 50000 -or $raw -notmatch 'hermes\.ps1 v' -or $raw -notmatch 
 Write-Host ("พร้อมใช้: " + (Get-Item "$d\hermes.ps1").Length + " bytes")
 ```
 
+## สะพานส่งหลักฐานกลับมา (ใช้เมื่อ agent/ใครก็ตามไม่เห็นเครื่องคุณ)
+
+`hermes.ps1` รันบนเครื่องคุณเท่านั้น — ส่งผลลัพธ์กลับได้ 3 ทาง ไม่ต้องใช้ MCP:
+
+| ทาง | วิธี | ข้อดี |
+| --- | --- | --- |
+| **แนบไฟล์ในแชท** | รัน `report-evidence.ps1` แล้วแนบไฟล์ `.txt`/`.zip` ที่ได้ | ง่ายสุด ไม่ต้องมี credential ไม่ต้องมี git |
+| **push ขึ้น repo** | `report-evidence.ps1 -Repo <owner>/<repo>` (commit ไป branch `hermes-evidence`) | agent อ่านเองได้ทันทีผ่าน GitHub (ทดสอบแล้วว่าเส้นทางนี้ใช้ได้) |
+| **วางข้อความ** | คัดลอกบรรทัด `RESULT_JSON {...}` ที่ `hermes.ps1` พิมพ์ | เร็วสุด แต่ได้ข้อมูลน้อยกว่า 2 ทางบน |
+
+```powershell
+# เก็บหลักฐานเป็นไฟล์เดียว (+ zip ให้แนบง่าย)
+powershell -NoProfile -ExecutionPolicy Bypass -File "$d\report-evidence.ps1" -AppDir 'D:\HermesAI\OBS' -Zip -Open
+
+# หรือส่งขึ้น GitHub ตรง ๆ (ใช้ git credential ที่มีอยู่แล้ว ไม่ต้องวาง token ในแชท)
+powershell -NoProfile -ExecutionPolicy Bypass -File "$d\report-evidence.ps1" -AppDir 'D:\HermesAI\OBS' -Repo 'End3lackStaR2/End3lackStaR2'
+```
+
+ตัวรายงานจะปิดข้อมูลที่อาจเป็นความลับให้อัตโนมัติ (`access_token`, `Bearer …`, JWT, `ghp_…`, `xoxb-…`)
+แต่ **เก็บ Pusher app key ไว้ให้อ่านได้** เพราะเป็น key สาธารณะที่มากับเว็บ Kick อยู่แล้ว (ใช้เป็นหลักฐาน)
+และมี `-SelfTest` ให้พิสูจน์เรื่องการปิดข้อมูลโดยไม่เขียนไฟล์อะไรเลย
+
+> **หมายเหตุเรื่อง MCP**: การเชื่อม connector ทำได้จากฝั่ง UI ของ Arena เท่านั้น และ slug `hermes`
+> ไม่มีให้เลือก (ตรวจแล้วได้สถานะ `unsupported`) — ถ้าคุณเพิ่ม MCP server ของตัวเองใน UI สำเร็จ
+> บอกชื่อ slug มา แล้วโหลด tools ของมันได้ในเทิร์นถัดไป
+
 ## ทางเลือกที่ไม่ต้องโหลดอะไรเลย
 
 ถ้าดาวน์โหลดจาก GitHub ไม่ได้ หรือข้อความที่คัดลอกโดน markdown ทำ URL พัง ให้ใช้
@@ -147,6 +173,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$d\tools\kick_pusher_probe.
 | `tools/patch_kick_app.py` | แพตช์ข้อมูล+โค้ด (`--plan`, `--dry-run`, `--revert`) | `python patch_kick_app.py --root D:\HermesAI\OBS --plan` |
 | `tools/test_patch_kick_app.py` | ชุดทดสอบของตัวแพตช์ (10 เทสต์) | `python -m unittest test_patch_kick_app` |
 | `selfcheck.cmd` | รัน self-test ทั้งหมดในคลิกเดียว | ดับเบิลคลิก |
+| `report-evidence.ps1` | รวมหลักฐานทั้งหมดเป็นไฟล์เดียว (ปิดความลับอัตโนมัติ) + `-Zip` + `-Repo` ส่งขึ้น GitHub + `-SelfTest` | `powershell -File report-evidence.ps1 -AppDir 'D:\HermesAI\OBS' -Zip -Open` |
 
 ---
 
