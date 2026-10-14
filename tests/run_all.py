@@ -17,7 +17,8 @@ import sys
 from pathlib import Path
 
 TESTS_DIR = Path(__file__).resolve().parent
-PY_SUITES = ("test_kick_chat.py", "test_kick_oauth.py", "test_ws_probe_events.py")
+PY_SUITES = ("test_kick_chat.py", "test_kick_oauth.py", "test_ws_probe_events.py",
+             "test_check_connection_log.py")
 JS_SUITES = ("test_kick_probe_html.js", "test_overlay_html.js")
 
 

@@ -60,8 +60,10 @@ foreach ($f in "run_all.py","test_kick_probe_html.js","test_overlay_html.js") {
   Invoke-WebRequest "$base/tests/$f" -OutFile (Join-Path $dst "tests\$f")
   Write-Host "โหลดแล้ว: tests/$f"
 }
-Invoke-WebRequest "$base/tools/pusher_sweep.py" -OutFile "$dst\tools\pusher_sweep.py"
-Write-Host "โหลดแล้ว: tools/pusher_sweep.py"
+foreach ($f in "pusher_sweep.py","check_connection_log.py") {
+  Invoke-WebRequest "$base/tools/$f" -OutFile "$dst\tools\$f"
+  Write-Host "โหลดแล้ว: tools/$f"
+}
 ```
 
 **วิธี B: curl (มีมาใน Windows 10/11 อยู่แล้ว)**
@@ -74,6 +76,7 @@ curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41
 mkdir tests tools
 curl -O --output-dir tests https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/tests/run_all.py
 curl -O --output-dir tools https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/tools/pusher_sweep.py
+curl -O --output-dir tools https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/tools/check_connection_log.py
 ```
 
 **วิธี C: เปิดในเบราว์เซอร์แล้ว Ctrl+S**
@@ -94,6 +97,7 @@ curl -O --output-dir tools https://raw.githubusercontent.com/End3lackStaR2/End3l
 | `kick_oauth.py` | รับ/รีเฟรช token (ใช้เฉพาะตอน *ส่ง* ข้อความ) |
 | `kick_events.py` | ทางเลือกทางการด้วย webhook แทน Pusher — ไม่ต้องพึ่ง key นี้เลย (ดูข้อ 6) |
 | `tools/pusher_sweep.py` | ยิงทดสอบ **ทุก cluster × ทุก key** พร้อมกันแล้วสรุปเป็นตารางเดียว (มี `--discover` ให้ถาม Kick ก่อน) |
+| `tools/check_connection_log.py` | อ่าน log ของโปรแกรมคุณ แล้วบอกว่าต่อติด/ถูกปฏิเสธ/key เก่า/เน็ตมีปัญหา (ดูข้อ 0.5) |
 
 ---
 
@@ -280,6 +284,46 @@ us2      32cbd69e4b950bf97679  ❌ ผิด cluster/key  Pusher เห็น ke
 | `--timeout 5` | หมดเวลาต่อคู่ (วินาที) |
 
 รหัสออก: `0` = เจอคู่ที่ใช้ได้ · `3` = ไม่มีคู่ไหนใช้ได้เลย
+
+---
+
+## 0.5) หลังแก้ key + เริ่มโปรแกรมใหม่: ตรวจ log ในคำสั่งเดียว
+
+`kick_notifier.py` เป็นโปรแกรมของคุณเอง (ไม่ได้อยู่ในรีโปนี้) — เครื่องมือนี้แค่อ่าน **log** ของมัน
+แล้วบอกว่าต่อติดหรือยัง ไม่ต้องตีความ log เอง:
+
+```cmd
+cd /d D:\HermesAI\OBS\files
+:: 1) ยืนยันว่าค่าใหม่ใช้ได้จริงก่อน (ไม่ต้องพึ่งโปรแกรมของคุณ)
+"...\python.exe" ws_probe.py --discover
+
+:: 2) เริ่มโปรแกรมของคุณ (1 ตัวเท่านั้น) แล้วเปิดอีกหน้าต่างตรวจ log
+"...\python.exe" tools\check_connection_log.py "D:\HermesAI\OBS\files\kick_notifier.log" --follow 60 --config "D:\HermesAI\OBS\files\config.json"
+```
+
+ผลลัพธ์ที่จะได้ พร้อมความหมาย:
+
+| ที่ขึ้น | หมายความว่า | ทำอะไรต่อ |
+| --- | --- | --- |
+| `✅ log มี pusher:connection_established (socket_id=…)` | **จบแล้ว** ต่อติดด้วย key ใหม่ | ปล่อยให้โปรแกรมทำงาน แล้วทดสอบแจ้งเตือน |
+| `❌ ยังถูกปฏิเสธด้วย key เก่าที่ Kick ปิดแล้ว (32cbd…)` | ตัวที่รันอยู่ **ยังอ่านค่าเก่า** | ปิดทุก process แล้วเปิดใหม่ 1 ตัว (ดูข้อ 0 กับดักข้อ 2) |
+| `❌ ถูกปฏิเสธด้วย key … (ไม่ใช่ 34bf7a0…)` | **มีอะไร override key อยู่** (env / ไฟล์อื่น / ค่า hardcode ในโค้ด) | รัน `kick_chat.py report` แล้วส่งผลมา |
+| `⚠️ ไฟล์นี้ไม่ได้ถูกเขียนมา X นาที` | โปรแกรมไม่ได้เขียน log ไฟล์นี้ (หรือไม่ได้รัน / log ไปที่อื่น) | ตรวจ path ของ log หรือดูว่ามัน log ลง console |
+| `⚠️ เจอปัญหาชั้นเน็ต: TLS/DNS/TCP` | ติดที่ชั้นเน็ต ไม่ใช่ที่ key | ดูบรรทัดด้านบน (TLS ถูกตัด = proxy/security software) |
+
+ตัวเลือกที่มีประโยชน์:
+
+| ตัวเลือก | ใช้ทำอะไร |
+| --- | --- |
+| `--follow 60` | เฝ้าดูข้อความใหม่ 60 วินาที (ให้เวลาโปรแกรมต่อใหม่หลังแก้ค่า) |
+| `--config ไฟล์.json` | ตรวจ **พร้อมกัน** ว่าไฟล์ config ที่โปรแกรมอ่านมี key อะไร (จะเตือนถ้ายังเป็น key เก่า) |
+| `--expect-key …` | เทียบกับ key ที่ควรเป็น (ค่าเริ่มต้นคือ key ปัจจุบันของ Kick) |
+| `--stale-minutes 10` | ถ้าไฟล์ log ไม่ถูกเขียนมานานกว่านี้ ให้เตือนว่า process ไม่ได้ทำงาน (ใส่ `0` เพื่อปิด) |
+
+รหัสออก: `0` ต่อติด · `3` ถูกปฏิเสธ (มี key ที่ Pusher เห็นมาให้ด้วย) · `4` ไม่พบหลักฐาน/หมดเวลารอ · `5` ไม่พบไฟล์ log
+
+> **หมายเหตุ:** ถ้าคำสั่ง `kick_notifier.py` ขึ้น *"can't open file ... No such file or directory"* แปลว่าไฟล์นั้นไม่ได้อยู่ในโฟลเดอร์ —
+> ใช้ `ws_probe.py --discover` (ยืนยันค่าจาก Kick) หรือ `kick_chat.py listen --chatroom <chatroom_id>` (ฟังแชทจริง) แทนได้ทันที
 
 **กรณีที่พบอักขระซ่อน** ผลจะออกแบบนี้ — แก้ด้วยการพิมพ์ key ใหม่ (อย่าคัดลอกจากแชท/หน้าเว็บ):
 
@@ -811,7 +855,7 @@ cd /d "D:\HermesAI\OBS\files"
 | `ws_probe.py` | **ไฟล์เดียว 0 dependency** — ตรวจ DNS/TCP/TLS(ใบรับรอง)/WS handshake/key (จับอักขระซ่อน) |
 | `kick_probe.html` | **ทดสอบในเบราว์เซอร์** — ไล่หา cluster+key ที่ใช้ได้จริง (ไม่ต้องมี Python) |
 | `kick_events.py` | Events API ทางการ: `setup` / `serve` (+overlay/SSE) / `subscribe` / `list` / `delete` / `status` / `verify` |
-| `tests/` | เทสต์ออฟไลน์: Python 64 เคส + JavaScript 2 ไฟล์ (หน้า probe และหน้า overlay) |
+| `tests/` | เทสต์ออฟไลน์: Python 73 เคส + JavaScript 2 ไฟล์ (หน้า probe และหน้า overlay) |
 
 **ตรวจว่าไฟล์ที่โหลดมาทำงานถูกต้อง** (ไม่ต้องต่อเน็ต ไม่ต้องมี Kick token):
 
@@ -820,7 +864,7 @@ cd /d D:\HermesAI\OBS\files
 "...\python.exe" tests\run_all.py
 ```
 
-ผลที่ควรเห็น: `ผ่าน 5/5 ชุด` — ถ้าเครื่องไม่มี Node.js จะขึ้น `ผ่าน 3/5 ชุด · ข้าม 2` ซึ่ง **ถือว่าปกติ**
+ผลที่ควรเห็น: `ผ่าน 6/6 ชุด` — ถ้าเครื่องไม่มี Node.js จะขึ้น `ผ่าน 4/6 ชุด · ข้าม 2` ซึ่ง **ถือว่าปกติ**
 (เทสต์หน้าเว็บ 2 ตัวนั้นต้องใช้ Node ถ้าไม่มีก็ข้ามได้ ไม่กระทบการใช้งานจริง)
 
 อ้างอิง: [Kick Dev Docs](https://github.com/KickEngineering/KickDevDocs) · [Pusher Channels protocol](https://pusher.com/docs/channels/library_auth_reference/pusher-websockets-protocol/) · repos ที่อ้างในข้อ 1
