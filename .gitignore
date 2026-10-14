@@ -10,6 +10,8 @@ hermes.launch.txt
 *.bak-*
 hermes_report*.json
 hermes_report*.txt
+hook.txt
+*webhook*.txt
 
 # virtualenvs / editors
 .venv/

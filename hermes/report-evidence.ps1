@@ -29,6 +29,10 @@
       .\report-evidence.ps1 -Repo user/repo -Branch hermes-evidence
                                                   # commit it to the repo (uses your git
                                                   # credential manager - no token in chat)
+      .\report-evidence.ps1 -DiscordWebhookFile "$env:USERPROFILE\hook.txt"
+                                                  # post the report to a Discord channel
+                                                  # (URL comes from a file: it is a credential,
+                                                  #  never paste it into a chat)
       .\report-evidence.ps1 -SelfTest             # prove redaction works, write nothing
 
     Exit codes: 0 = report written, 1 = written with warnings, 2 = failure.
@@ -43,6 +47,11 @@ param(
     [string]$Repo = '',
     [string]$Branch = 'hermes-evidence',
     [switch]$NoPush,
+
+    # Discord: post the report to a channel webhook (NO Arena connector needed).
+    # The webhook URL is a credential: pass a FILE path, never the URL in a chat.
+    [string]$Discord = '',
+    [string]$DiscordWebhookFile = '',
 
     [switch]$Open,
     [switch]$Zip,
@@ -141,6 +150,90 @@ function Get-ExistingPaths {
     return $found
 }
 
+function Get-DiscordWebhook {
+    param([string]$Url, [string]$File, [switch]$Quiet)
+    if ($File) {
+        if (-not (Test-Path -LiteralPath $File)) {
+            Write-Warn ('webhook file not found: ' + $File); return ''
+        }
+        try { $Url = ([IO.File]::ReadAllText($File)).Trim() }
+        catch { Write-Warn ('cannot read webhook file: ' + $_.Exception.Message); return '' }
+    }
+    if (-not $Url) { return '' }
+    # only accept a real Discord webhook, so a typo can never post your log somewhere else
+    if ($Url -notmatch '^https://([a-z]+\.)?discord(app)?\.com/api/webhooks/\d+/[A-Za-z0-9_\-]+$') {
+        if (-not $Quiet) {
+            Write-Warn 'not a Discord webhook URL (expected https://discord.com/api/webhooks/<id>/<token>) - nothing sent'
+        }
+        return ''
+    }
+    return $Url
+}
+
+function Send-DiscordEvidence {
+    param([string]$Webhook, [string]$FilePath, [string]$Summary = '')
+
+    $fileName = Split-Path -Leaf $FilePath
+    $content = 'hermes evidence report'
+    if ($Summary) { $content = $Summary }
+    if ($content.Length -gt 1800) { $content = $content.Substring(0, 1800) }
+    $payload = '{"content":"hermes evidence report"}'
+    try { $payload = (@{ content = $content } | ConvertTo-Json -Compress) } catch { }
+
+    # multipart/form-data assembled by hand: Invoke-RestMethod -Form needs PowerShell 6+
+    $boundary = '----hermes' + [Guid]::NewGuid().ToString('N')
+    $enc = New-Object System.Text.UTF8Encoding($false)
+    try { $fileBytes = [IO.File]::ReadAllBytes($FilePath) }
+    catch { Write-Warn ('cannot read ' + $FilePath); return $false }
+
+    $pre = $enc.GetBytes(
+        '--' + $boundary + "`r`n" +
+        'Content-Disposition: form-data; name="payload_json"' + "`r`n`r`n" +
+        $payload + "`r`n" +
+        '--' + $boundary + "`r`n" +
+        'Content-Disposition: form-data; name="files[0]"; filename="' + $fileName + '"' + "`r`n" +
+        'Content-Type: text/plain' + "`r`n`r`n")
+    $post = $enc.GetBytes("`r`n--" + $boundary + "--`r`n")
+    $body = New-Object byte[] ($pre.Length + $fileBytes.Length + $post.Length)
+    [Array]::Copy($pre, 0, $body, 0, $pre.Length)
+    [Array]::Copy($fileBytes, 0, $body, $pre.Length, $fileBytes.Length)
+    [Array]::Copy($post, 0, $body, $pre.Length + $fileBytes.Length, $post.Length)
+
+    try {
+        Invoke-RestMethod -Uri $Webhook -Method Post -Body $body -TimeoutSec 60 `
+            -ContentType ('multipart/form-data; boundary=' + $boundary) -ErrorAction Stop | Out-Null
+        Write-Body ('posted the report file to Discord (' + $fileName + ')') 'Green'
+        return $true
+    } catch {
+        Write-Warn ('Discord file upload failed: ' + $_.Exception.Message)
+    }
+
+    # fallback: text only, chunked, so the key lines still arrive
+    try {
+        $text = [IO.File]::ReadAllText($FilePath)
+        $chunks = New-Object System.Collections.Generic.List[string]
+        $current = ''
+        foreach ($line in ($text -split "`r?`n")) {
+            if (($current.Length + $line.Length + 1) -gt 1800) { $chunks.Add($current); $current = '' }
+            $current += $line + "`n"
+            if ($chunks.Count -ge 4) { break }
+        }
+        if ($current) { $chunks.Add($current) }
+        $count = [Math]::Min($chunks.Count, 4)
+        for ($i = 0; $i -lt $count; $i++) {
+            $msg = @{ content = ('```' + "`n" + '[' + ($i + 1) + '/' + $count + '] ' + $chunks[$i] + '```') } |
+                ConvertTo-Json -Compress
+            Invoke-RestMethod -Uri $Webhook -Method Post -Body $enc.GetBytes($msg) -TimeoutSec 30 `
+                -ContentType 'application/json' -ErrorAction Stop | Out-Null
+        }
+        Write-Body ('posted ' + $count + ' text chunk(s) to Discord instead of the file') 'Yellow'
+        return $true
+    } catch {
+        Write-Warn ('Discord text post failed too: ' + $_.Exception.Message)
+        return $false
+    }
+}
+
 function Invoke-SelfTest {
     Write-Body 'redaction self test'
     $samples = @{
@@ -160,6 +253,16 @@ function Invoke-SelfTest {
     $keep = Get-Redacted 'app_key=34bf7a0ff419a2a775b9 channel=abc'
     if ($keep -notmatch '34bf7a0ff419a2a775b9') { Write-Body '  [FAIL] public pusher key must stay readable'; $fail++ }
     else { Write-Body '  [OK]   public pusher key is kept' }
+
+    $good = Get-DiscordWebhook -Url 'https://discord.com/api/webhooks/123456789012345678/AbCdEf-ghi_JKL' -File '' -Quiet
+    $bad1 = Get-DiscordWebhook -Url 'https://evil.example.com/api/webhooks/1/x' -File '' -Quiet
+    $bad2 = Get-DiscordWebhook -Url 'not a url' -File '' -Quiet
+    if ($good -and -not $bad1 -and -not $bad2) {
+        Write-Body '  [OK]   discord webhook guard (discord.com only)'
+    } else {
+        Write-Body ('  [FAIL] discord webhook guard: good=' + [bool]$good + ' bad1=' + [bool]$bad1 + ' bad2=' + [bool]$bad2)
+        $fail++
+    }
     Write-Body ''
     Write-Body ("self test: {0} failed" -f $fail)
     if ($fail -gt 0) { return 2 }
@@ -357,6 +460,21 @@ if ($Zip) {
         Compress-Archive -LiteralPath $OutFile -DestinationPath $zipPath -Force
         Write-Host ('zip written   : ' + $zipPath) -ForegroundColor Green
     } catch { Write-Warn ('zip failed: ' + $_.Exception.Message) }
+}
+
+if ($Discord -or $DiscordWebhookFile) {
+    $hook = Get-DiscordWebhook -Url $Discord -File $DiscordWebhookFile
+    if ($hook) {
+        $verdictBit = ''
+        if (Test-Path -LiteralPath $reportJson) {
+            try {
+                $verdictBit = 'verdict=' + (Get-Content -LiteralPath $reportJson -Raw | ConvertFrom-Json).verdict
+            } catch { }
+        }
+        $summary = 'hermes evidence from ' + $env:COMPUTERNAME + ' ' + $now.ToString('yyyy-MM-dd HH:mm:ss') +
+                   ' ' + $verdictBit + "`n" + 'file: ' + (Split-Path -Leaf $OutFile)
+        Send-DiscordEvidence -Webhook $hook -FilePath $OutFile -Summary $summary | Out-Null
+    }
 }
 
 if ($Repo -and -not $NoPush) {

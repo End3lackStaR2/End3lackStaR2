@@ -215,6 +215,11 @@ Write-Host ("RESULT_JSON " + (@{ verdict = $v; log_path = $log; new_lines = $lin
 > ```powershell
 > powershell -NoProfile -ExecutionPolicy Bypass -File $h -AppDir 'D:\HermesAI\OBS' -Repo 'End3lackStaR2/End3lackStaR2'
 > ```
+>
+> หรือยิงเข้า Discord (ไม่ต้องมี connector ของ Arena) — เก็บ webhook URL ในไฟล์ก่อน:
+> ```powershell
+> powershell -NoProfile -ExecutionPolicy Bypass -File $h -AppDir 'D:\HermesAI\OBS' -DiscordWebhookFile (Join-Path $env:USERPROFILE 'hook.txt')
+> ```
 
 ```powershell
 $app  = 'D:\HermesAI\OBS'

@@ -80,6 +80,7 @@ Write-Host ("พร้อมใช้: " + (Get-Item "$d\hermes.ps1").Length + "
 | **แนบไฟล์ในแชท** | รัน `report-evidence.ps1` แล้วแนบไฟล์ `.txt`/`.zip` ที่ได้ | ง่ายสุด ไม่ต้องมี credential ไม่ต้องมี git |
 | **push ขึ้น repo** | `report-evidence.ps1 -Repo <owner>/<repo>` (commit ไป branch `hermes-evidence`) | agent อ่านเองได้ทันทีผ่าน GitHub (ทดสอบแล้วว่าเส้นทางนี้ใช้ได้) |
 | **วางข้อความ** | คัดลอกบรรทัด `RESULT_JSON {...}` ที่ `hermes.ps1` พิมพ์ | เร็วสุด แต่ได้ข้อมูลน้อยกว่า 2 ทางบน |
+| **Discord** | `report-evidence.ps1 -DiscordWebhookFile <ไฟล์ที่มี URL>` | ไม่ต้องมี connector ของ Arena เลย — เครื่องยิงเข้า channel เอง เห็นบนมือถือทันที |
 
 ```powershell
 # เก็บหลักฐานเป็นไฟล์เดียว (+ zip ให้แนบง่าย)
@@ -87,7 +88,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$d\report-evidence.ps1" -Ap
 
 # หรือส่งขึ้น GitHub ตรง ๆ (ใช้ git credential ที่มีอยู่แล้ว ไม่ต้องวาง token ในแชท)
 powershell -NoProfile -ExecutionPolicy Bypass -File "$d\report-evidence.ps1" -AppDir 'D:\HermesAI\OBS' -Repo 'End3lackStaR2/End3lackStaR2'
+
+# หรือยิงเข้า Discord (สร้าง webhook ใน channel ก่อน: Channel settings -> Integrations -> Webhooks)
+# เก็บ URL ไว้ในไฟล์ เช่น $env:USERPROFILE\hook.txt  แล้วส่ง "พาธไฟล์" ไม่ใช่ตัว URL
+powershell -NoProfile -ExecutionPolicy Bypass -File "$d\report-evidence.ps1" -AppDir 'D:\HermesAI\OBS' -DiscordWebhookFile "$env:USERPROFILE\hook.txt"
 ```
+
+> **คำเตือน**: Discord webhook URL = credential (ใครได้ไปก็โพสต์เข้า channel ได้) — ห้ามวางในแชท/ที่สาธารณะ
+> สคริปต์จะ **ปฏิเสธ URL ที่ไม่ใช่ `discord.com`** ให้อัตโนมัติ (กันพิมพ์ผิดแล้วส่ง log ไปที่อื่น) และถ้าอัปโหลดไฟล์ไม่ผ่าน จะส่งเป็นข้อความแบ่งท่อนแทน
 
 ตัวรายงานจะปิดข้อมูลที่อาจเป็นความลับให้อัตโนมัติ (`access_token`, `Bearer …`, JWT, `ghp_…`, `xoxb-…`)
 แต่ **เก็บ Pusher app key ไว้ให้อ่านได้** เพราะเป็น key สาธารณะที่มากับเว็บ Kick อยู่แล้ว (ใช้เป็นหลักฐาน)
