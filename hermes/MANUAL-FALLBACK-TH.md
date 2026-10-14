@@ -7,31 +7,54 @@
 
 ---
 
-## ท่อน 0 (ไม่บังคับ) — โหลดเครื่องมือเต็มแบบที่ markdown ทำ URL พังไม่ได้
+## ท่อน 0 (ไม่บังคับ) — โหลดเครื่องมือเต็ม (แบบที่ markdown ทำ URL พังไม่ได้)
 
-URL ถูก **ต่อจากชิ้นส่วน** จึงไม่มีตัวอักษร `[` `]` `(` `)` ติดมาได้ และมีตัวตรวจว่าโหลดครบ:
+URL ถูก **ต่อจากชิ้นส่วน** จึงไม่มี `[` `]` `(` `)` ติดมาได้ และมีตัวตรวจว่าไฟล์ที่ได้ "ครบและถูกไฟล์"
+
+ทาง A — **zip จาก codeload** (ตรวจแล้วว่าได้ไฟล์ตรงกับต้นฉบับทุกไบต์ = 69,094 ไบต์):
 
 ```powershell
-$repo  = 'End3lackStaR2/End3lackStaR2'
-$sha   = '6b56bb56e2932e483b757288fbef976011531926'
-$base  = 'https://' + 'raw.' + 'githubusercontent.com/' + $repo + '/' + $sha + '/hermes'
-$d     = Join-Path $env:USERPROFILE 'hermes-kick'
+$repo = 'End3lackStaR2/End3lackStaR2'
+$sha  = '51cacf730f862ea434dcdea2db58ea7b9461af6e'
+$d    = Join-Path $env:USERPROFILE 'hermes-kick'
 New-Item -ItemType Directory -Force -Path $d | Out-Null
 
-iwr -UseBasicParsing ($base + '/hermes.ps1') -OutFile (Join-Path $d 'hermes.ps1')
-iwr -UseBasicParsing ($base + '/tools/patch_kick_app.py') -OutFile (Join-Path $d 'patch_kick_app.py')
+$zip = Join-Path $env:TEMP 'ebs.zip'
+iwr -UseBasicParsing ('https://' + 'codeload.' + 'github.com/' + $repo + '/zip/' + $sha) -OutFile $zip
+Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $env:TEMP 'ebs') -Force
+Copy-Item (Join-Path $env:TEMP ('ebs/End3lackStaR2-' + $sha + '/hermes/*')) $d -Recurse -Force
+Copy-Item (Join-Path $env:TEMP ('ebs/End3lackStaR2-' + $sha + '/hermes/tools')) $d -Recurse -Force
 
 $raw = Get-Content (Join-Path $d 'hermes.ps1') -Raw
 if ($raw.Length -lt 50000 -or $raw -notmatch 'hermes\.ps1 v' -or $raw -notmatch 'VERDICT') {
-    Write-Host 'โหลดทาง raw ไม่ครบ - เปลี่ยนไปใช้ zip' -ForegroundColor Yellow
-    $zip = Join-Path $env:TEMP 'ebs.zip'
-    $zipUrl = 'https://' + 'codeload.' + 'github.com/' + $repo + '/zip/' + $sha
-    iwr -UseBasicParsing $zipUrl -OutFile $zip
-    Expand-Archive $zip -DestinationPath (Join-Path $env:TEMP 'ebs') -Force
-    Copy-Item (Join-Path $env:TEMP ("ebs\End3lackStaR2-" + $sha + "\hermes\*")) $d -Recurse -Force
+    Write-Host 'ไฟล์ไม่ครบ/ผิดไฟล์ - ลองทาง B' -ForegroundColor Yellow
+} else {
+    Write-Host ('พร้อมใช้: ' + (Join-Path $d 'hermes.ps1') + '  (' + (Get-Item (Join-Path $d 'hermes.ps1')).Length + ' bytes)') -ForegroundColor Green
 }
-Get-ChildItem $d | Select-Object Name, Length
-Write-Host ('พร้อมใช้: ' + (Join-Path $d 'hermes.ps1') + '  (' + (Get-Item (Join-Path $d 'hermes.ps1')).Length + ' bytes)') -ForegroundColor Green
+```
+
+ทาง B — ถ้า codeload ถูกบล็อก ใช้ **GitHub API** (คืนไฟล์เป็น base64, ตรวจแล้วว่าตรงกันทุกไบต์):
+
+```powershell
+$repo = 'End3lackStaR2/End3lackStaR2'
+$sha  = '51cacf730f862ea434dcdea2db58ea7b9461af6e'
+$d    = Join-Path $env:USERPROFILE 'hermes-kick'
+New-Item -ItemType Directory -Force -Path $d | Out-Null
+foreach ($f in @('hermes.ps1', 'tools/patch_kick_app.py', 'tools/kick_pusher_probe.py', 'tools/test_patch_kick_app.py')) {
+    $api  = 'https://' + 'api.' + 'github.com/repos/' + $repo + '/contents/hermes/' + $f + '?ref=' + $sha
+    $json = (iwr -UseBasicParsing $api).Content | ConvertFrom-Json
+    $dest = Join-Path $d ($f -replace '/', '\')
+    New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+    [IO.File]::WriteAllBytes($dest, [Convert]::FromBase64String($json.content))
+    Write-Host ("wrote {0} ({1} bytes)" -f $dest, (Get-Item $dest).Length)
+}
+```
+
+ทาง C — วิธีปกติ (ใช้ได้บนเน็ตบ้านทั่วไป แต่ proxied/องค์กรอาจบล็อก):
+
+```powershell
+$base = 'github.com/End3lackStaR2/End3lackStaR2/raw/' + '51cacf730f862ea434dcdea2db58ea7b9461af6e' + '/hermes'
+iwr -UseBasicParsing ('https://' + $base + '/hermes.ps1') -OutFile (Join-Path $env:USERPROFILE 'hermes-kick\hermes.ps1')
 ```
 
 จากนั้นใช้คำสั่งนี้ (ไม่มีการพิมพ์ URL ซ้ำอีก):
@@ -41,6 +64,11 @@ $h = Join-Path $env:USERPROFILE 'hermes-kick\hermes.ps1'
 powershell -NoProfile -ExecutionPolicy Bypass -File $h doctor
 powershell -NoProfile -ExecutionPolicy Bypass -File $h fix -WaitSeconds 90 -Open
 ```
+
+> ตรวจสอบจากฝั่งผู้พัฒนา (sandbox ที่เข้าได้เฉพาะ github.com / codeload / api.github.com):
+> ทาง A และทาง B ให้ไฟล์ไบต์ตรงกันเป๊ะกับต้นฉบับ (69,094 ไบต์, BOM ถูกต้อง, มี `RESULT_JSON` และตัวสแกนไฟล์)
+> ส่วนทาง C (ผ่าน `github.com/.../raw/...`) เป็น 302 ไป `raw.githubusercontent.com` ซึ่งเครือข่ายของผมเข้าไม่ถึง
+> จึง **ยืนยันจากฝั่งผมไม่ได้** แต่บนเครื่องบ้านทั่วไปใช้ได้ — ถ้าไม่ได้ให้ใช้ทาง A หรือ B
 
 ---
 
