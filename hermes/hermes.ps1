@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
     hermes.ps1 - HermesAI / Kick notifier: fix, verify, restart, report.
 
@@ -386,24 +386,31 @@ function Resolve-Targets {
         $t.ScriptPath = [string]$cache.script_path; $t.ScriptSource = 'cache'
     }
     if (-not $t.ScriptPath) {
+        # Score every .py file: a good entry point usually looks like one and has a
+        # __main__ guard, and it either talks to Pusher/Kick or imports the worker.
         $pyFiles = @()
         try {
             $pyFiles = Get-ChildItem -LiteralPath $InstallDir -Filter '*.py' -Recurse -File -Depth 3 -ErrorAction SilentlyContinue |
                 Where-Object { $_.FullName -notmatch '\\(\.venv|venv|node_modules|\.git|__pycache__|site-packages)\\' -and $_.Length -lt 2MB }
         } catch { $pyFiles = @() }
-        $hits = @()
+        $best = $null
+        $bestScore = 0
         foreach ($f in $pyFiles) {
+            $score = 0
+            if ($f.Name -match '^(kick_notifier|kick_notify|kickbot|kick_bot|notifier|main|start|run|bot|app)\.py$') { $score += 3 }
+            elseif ($f.Name -match '(notifier|kick|bot|main|start|run)') { $score += 1 }
+            if ($f.Name -match '^(test_|conftest)') { $score -= 3 }
+            $rel = $f.FullName.Substring($InstallDir.Length).TrimStart('\')
+            if (($rel.Split('\')).Count -le 2) { $score += 1 }
             try {
-                if (Select-String -LiteralPath $f.FullName -Pattern 'KickWebSocket|ChatMessageEvent|pusher:subscribe|kick_notifier' -Quiet -ErrorAction Stop) {
-                    $hits += $f
-                }
+                if (Select-String -LiteralPath $f.FullName -Pattern 'KickWebSocket|ChatMessageEvent|pusher:|KickChatWorker|kick_notifier' -Quiet -ErrorAction Stop) { $score += 2 }
+                if (Select-String -LiteralPath $f.FullName -Pattern 'if __name__' -Quiet -ErrorAction Stop) { $score += 2 }
             } catch { }
+            if ($score -gt $bestScore) { $bestScore = $score; $best = $f }
         }
-        if ($hits.Count -gt 0) {
-            $pref = $hits | Where-Object { $_.Name -match '(notifier|kick|main|bot|app)' } | Sort-Object Length -Descending | Select-Object -First 1
-            if (-not $pref) { $pref = $hits | Sort-Object Length -Descending | Select-Object -First 1 }
-            $t.ScriptPath = $pref.FullName
-            $t.ScriptSource = 'scan'
+        if ($best) {
+            $t.ScriptPath = $best.FullName
+            $t.ScriptSource = "scan (score $bestScore)"
         }
     }
 
