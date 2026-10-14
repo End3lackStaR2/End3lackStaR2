@@ -1,6 +1,44 @@
 # แก้ error `App key 32cbd69e4b950bf97679 not in this cluster`
 
-อัปเดต: 2026-10-14 · ใช้กับ `kick_chat.py` ในรีโปนี้
+อัปเดต: 2026-10-14 · ใช้กับ `ws_probe.py`, `kick_chat.py`, `kick_events.py` ในรีโปนี้
+
+---
+
+## ⬇️ 0.0) โหลดไฟล์ลงเครื่องก่อน (สำคัญ — ที่ผ่านมาคำสั่งยังไม่เคยถูกใช้เพราะไม่พบไฟล์)
+
+ไฟล์ทั้งหมดอยู่ใน GitHub ของคุณแล้ว — เลือกวิธีใดวิธีหนึ่ง (ไม่ต้องติดตั้งอะไรเพิ่ม):
+
+**วิธี A: PowerShell (วางทีเดียวจบ)**
+```powershell
+$base = "https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/a51d1f2"
+$dst  = "D:\HermesAI\OBS\files"
+New-Item -ItemType Directory -Force -Path $dst | Out-Null
+foreach ($f in "ws_probe.py","kick_chat.py","kick_oauth.py","kick_events.py") {
+  Invoke-WebRequest "$base/$f" -OutFile (Join-Path $dst $f)
+  Write-Host "โหลดแล้ว: $f"
+}
+```
+
+**วิธี B: curl (มีมาใน Windows 10/11 อยู่แล้ว)**
+```cmd
+cd /d "D:\HermesAI\OBS\files"
+curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/a51d1f2/ws_probe.py
+curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/a51d1f2/kick_chat.py
+```
+
+**วิธี C: เปิดในเบราว์เซอร์แล้ว Ctrl+S**
+<https://github.com/End3lackStaR2/End3lackStaR2/blob/arena/2a41429a-end3lackstar2/ws_probe.py> → กดปุ่ม **Raw** → **Ctrl+S** → เลือกโฟลเดอร์ `D:\HermesAI\OBS\files`
+
+> ลิงก์แบบใช้ commit `a51d1f2` จะไม่เปลี่ยนตามเวลา (คงที่) ถ้าโหลดแล้วอยากตรวจว่าไฟล์ครบ ให้รัน `python ws_probe.py --help` ต้องขึ้นข้อความ help ไม่ใช่ error
+
+**ไฟล์ไหนใช้ทำอะไร**
+
+| ไฟล์ | ใช้เมื่อ |
+| --- | --- |
+| `ws_probe.py` | **เริ่มจากตัวนี้** — ไฟล์เดียวจบ บอกได้ทันทีว่าปัญหาอยู่ที่ "เส้นทาง" หรือ "key/โค้ด" |
+| `kick_chat.py` | วินิจฉัย/ซ่อม config ที่ซับซ้อน (`report`, `fix-config`, `scan`, `extract`) + ฟัง/ส่งแชท |
+| `kick_oauth.py` | รับ/รีเฟรช token (ใช้เฉพาะตอน *ส่ง* ข้อความ) |
+| `kick_events.py` | ทางเลือกทางการด้วย webhook แทน Pusher (ดูข้อ 9) |
 
 ---
 
@@ -15,6 +53,8 @@
 | ต้องแก้ตรงไหน | host/cluster ใน `config.json` ให้เป็น `us2` เท่านั้น (2 บรรทัด) แล้วรัน `kick_chat.py probe` เพื่อยืนยัน |
 | ถ้า host เป็น `us2` แล้วยัง error | ดูข้อ **3.5** — hosts file / proxy / DNS ถูกดัก / key ถูกหมุน / process เก่ายังไม่รีสตาร์ท (ใช้ `fix-config` + `scan`) |
 | ถ้าอนาคต Kick เปลี่ยน key | รัน `python kick_chat.py probe` — สคริปต์จะไล่ทดสอบทุก cluster ให้เอง (หรือวาง URL จาก DevTools ผ่าน `discover --ws-url`) |
+| เห็น error ทั้งที่ process ไม่ทำงาน | เกือบแน่นอนว่าเป็น **log เก่า** — ดูข้อ 0.1 (ตรวจเวลาไฟล์ log) |
+| อยากได้คำตอบใน 5 วินาที | รัน `python ws_probe.py` — บอกได้ทันทีว่าปัญหาอยู่ที่เส้นทางหรือที่ key (ดูข้อ 0.2) |
 
 > **สรุปสาเหตุ:** ไม่ใช่ "token/credentials ผิด" และไม่ใช่ "app key ผิด" — เป็นเพราะปลายทาง WebSocket ที่ต่ออยู่ไม่ใช่ `ws-us2.pusher.com` ครับ
 
@@ -53,6 +93,96 @@ Pusher : error : {"code":4001,"message":"App key <KEY-ที่-Pusher-เห็
    ```
 
 💡 **ทางลัด:** `kick_chat.py report` (ข้อ 3.6) เก็บทั้ง 3 อย่างนี้มาให้ในบล็อกเดียว
+
+---
+
+## 0.1) "process ไม่ทำงาน แต่ยังเห็น error" = กำลังอ่าน log เก่า (กับดักที่พบบ่อยสุด)
+
+ถ้า `tasklist` ไม่มี python ทำงานอยู่ **จะไม่มีอะไรสร้าง error ใหม่ได้** — บรรทัด error ที่เห็นคือของเก่าที่ค้างในไฟล์ log ให้ตรวจเวลาให้ชัดก่อนสรุปว่ายังไม่หาย:
+
+```cmd
+:: ดูเวลาแก้ไขล่าสุดของไฟล์ log ทั้งหมด
+powershell -NoProfile -Command "Get-ChildItem -Recurse -Include *.log,*.txt -Path 'D:\HermesAI\OBS' | Sort-Object LastWriteTime -Descending | Select-Object -First 8 LastWriteTime,Length,FullName | Format-Table -AutoSize"
+
+:: ดูท้ายไฟล์ 20 บรรทัดพร้อมเวลา
+powershell -NoProfile -Command "Get-Content 'D:\HermesAI\OBS\files\kick_notifier.log' -Tail 20"
+```
+
+เกณฑ์ตัดสิน: ถ้าเวลาของ log **ไม่ขยับ** หลังจากคุณสตาร์ทโปรแกรมใหม่ → error ที่อ่านอยู่เป็นของเก่า ปัญหาจริงคือ "ตัวใหม่ยังไม่ต่อ" หรือ "ตัวใหม่ error อีกแบบ"
+
+⚠️ **ทดสอบง่ายที่สุด: ลบ/เปลี่ยนชื่อ log เก่า แล้วสตาร์ทใหม่ 1 process** — ถ้าไฟล์ใหม่ยังเกิดบรรทัด `not in this cluster` จริง ค่อยไปต่อข้อ 0.2
+
+---
+
+## 0.2) `ws_probe.py` — ตัดสินใน 5 วินาที ว่าปัญหาอยู่ที่เส้นทางหรือที่ key
+
+```cmd
+cd /d "D:\HermesAI\OBS\files"
+"C:\Users\mail3\AppData\Local\Programs\Python\Python312\python.exe" ws_probe.py
+```
+
+ทดสอบค่ามาตรฐานที่ Kick ใช้ (`us2` + key สาธารณะ) ถ้าอยากทดสอบค่าจาก config ของคุณเอง:
+
+```cmd
+"...\python.exe" ws_probe.py --from-config "D:\HermesAI\OBS\files\config.json"
+```
+
+ตัวอย่างผลลัพธ์เมื่อ **ทุกอย่างถูกต้อง**:
+
+```
+=== ตรวจ key ที่จะส่ง ===
+   repr() : '32cbd69e4b950bf97679'
+   ยาว    : 20 ตัวอักษร
+   >>> ปรกติ (hex ล้วน, ยาวถูก)
+
+1) DNS    : 3.147.174.126, 52.15.178.107, 3.12.46.165  (24 ms)
+2) TCP    : ต่อได้ใน 31 ms
+3) TLS    : TLSv1.3 / TLS_AES_128_GCM_SHA256
+   cert   : CN=*.pusher.com
+   ออกโดย : C=US, O=DigiCert Inc, CN=DigiCert TLS RSA SHA256 2020 CA1
+   SAN    : *.pusher.com, pusher.com
+4) WS     : HTTP/1.1 101 Switching Protocols
+5) Frame  : event=pusher:connection_established
+
+>>> ✅ ต่อได้ปกติ — host + key ที่ส่งไปถูกต้องทั้งคู่
+```
+→ แปลว่า **key/host ถูกแน่นอน** ปัญหาอยู่ที่โค้ดของคุณ (อ่านฟิลด์ผิด / hardcode / process เก่า) ไม่ใช่ที่ Kick
+
+**สิ่งที่ `ws_probe.py` จับได้ และตัวอื่นจับไม่ได้:**
+
+| ตรวจ | ทำไมสำคัญ |
+| --- | --- |
+| **ใบรับรอง TLS: ใครออก + SAN** | "TLS handshake ✅" **ไม่ได้แปลว่าคุณคุยกับ Pusher** — proxy/security software ที่ถอดรหัส (MITM) ก็ TLS ผ่านได้ ถ้า SAN ไม่ใช่ `*.pusher.com` = มีคนกลางทางแน่นอน |
+| **`repr()` ของ key** | จับ **อักขระซ่อน** ที่ตามองไม่เห็น: `U+200B` ZERO WIDTH SPACE, `U+00A0` NBSP, และ `\u200b` ที่ยังเป็นตัวอักษร escape ในไฟล์ JSON — ทั้งหมดทำให้ Pusher มองว่าเป็น "คนละ key" |
+| **key ที่ Pusher พูดถึง** | ถ้าไม่ตรงกับ key ที่คุณคิดว่าส่งไป = หลักฐานว่าโค้ดใช้ค่าอื่นตอนรัน |
+| **`Server` / `Via` / `CF-Ray` ใน header** | มี `Via`/proxy header = มีอะไรคั่นกลาง |
+| **`--repeat 2`** | ยิงซ้ำดูว่า DNS/เส้นทางไม่คงที่ไหม (บางเน็ตสลับ IP ทุกครั้ง) |
+
+**กรณีที่พบอักขระซ่อน** ผลจะออกแบบนี้ — แก้ด้วยการพิมพ์ key ใหม่ (อย่าคัดลอกจากแชท/หน้าเว็บ):
+
+```
+   [!!] ตำแหน่ง 20: U+200B (ZERO WIDTH SPACE)
+   [!!] รูปแบบไม่ใช่ hex 12-40 ตัว (ตอนนี้ยาว 21)
+```
+หรือแก้ config ให้เป็น key ตรง ๆ (ไม่มี escape):
+
+```json
+{ "pusher": { "cluster": "us2", "appKey": "32cbd69e4b950bf97679" } }
+```
+
+**ทางเลือกไม่โหลดไฟล์เลย** (PowerShell อย่างเดียว) — ต่อ WebSocket แล้วพิมพ์ข้อความแรกจาก Pusher:
+
+```powershell
+$u = "wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0-rc2&flash=false"
+$ws = New-Object System.Net.WebSockets.ClientWebSocket
+$null = $ws.ConnectAsync([uri]$u, [Threading.CancellationToken]::None).Wait(15000)
+$b = New-Object byte[] 8192
+$t = $ws.ReceiveAsync((New-Object System.ArraySegment[byte] -ArgumentList @(,$b)), [Threading.CancellationToken]::None)
+$null = $t.Wait(15000)
+[Text.Encoding]::UTF8.GetString($b, 0, $t.Result.Count)
+$ws.Dispose()
+```
+ถ้าพิมพ์ `pusher:connection_established` → key+cluster ใช้ได้ชัวร์ · ถ้าพิมพ์ `not in this cluster` → เอาข้อความนั้นมาเทียบว่า key ที่ Pusher เห็นคืออะไร
 
 ---
 
@@ -387,37 +517,93 @@ taskkill /IM python.exe /F
 
 ---
 
-## 6) ทางเลือกทางการ (ไม่พึ่ง Pusher key อีกเลย)
+## 6) ทางเลือกทางการ: Events API (webhook) แทน Pusher — พร้อมสคริปต์ในรีโป
 
-ถ้าไม่อยากเจอปัญหา key/cluster เปลี่ยนอีก ใช้ **Events API (webhook)** ของ Kick:
+ถ้าไม่อยากเจอปัญหา key/cluster เปลี่ยนอีก ใช้ **Events API ทางการ** ได้เลย (`kick_events.py` ในรีโปทำทั้งหมดนี้ให้แล้ว)
 
 | อย่าง | Pusher WebSocket (ที่ใช้อยู่) | Events API ทางการ |
 | --- | --- | --- |
 | รับแชท | `chatrooms.{id}.v2` ผ่าน Pusher | webhook `chat.message.sent` |
 | สโคปที่ต้องมี | ไม่ต้องใช้ token (อ่านสาธารณะ) | `events:subscribe` |
 | ต้องมี public endpoint | ไม่ต้อง | **ต้องมี** HTTPS ปลายทางที่ Kick ยิงมาได้ |
+| ตรวจสอบที่มา | ไม่มี | ลายเซ็น RSA `Kick-Event-Signature` (มี public key ให้ดึง) |
 | เสถียรภาพ | Kick เปลี่ยน key/cluster ได้เงียบ ๆ | เอกสารรับรอง + มี changelog |
-| ข้อจำกัด | ไม่มี replay ถ้าหลุด | chat.message.sent สูงสุด 1,000 subscription สำหรับแอปที่ยังไม่ verified |
+| ข้อจำกัด | ไม่มี replay ถ้าหลุด | `chat.message.sent` จำกัด 1,000 subscription สำหรับแอปที่ยังไม่ verified |
+| โทษถ้าล้มเหลว | ต้อง reconnect เอง | Kick เลิกส่งถ้า webhook ล้มเหลวต่อเนื่องเกิน 1 วัน → ต้อง subscribe ใหม่ |
 
-ส่งข้อความเข้าหาแชท (ฝั่งส่ง) ใช้ API ทางการอยู่แล้ว ซึ่งสคริปต์นี้รองรับ:
+### 6.1) ทำ tunnel ให้มี HTTPS สาธารณะ (จำเป็น เพราะเครื่องบ้านไม่มี IP/โดเมนสาธารณะ)
+
+เลือกอย่างใดอย่างหนึ่ง (ฟรีทั้งคู่):
 
 ```cmd
-:: ต้องมี token ที่มี scope chat:write (จาก kick_oauth.py login)
-"...\python.exe" kick_chat.py send --channel yourslug --broadcaster-user-id 123456 --message "สวัสดีครับ"
+:: Cloudflare Tunnel — ไม่ต้องสมัครก็ได้ (quick tunnel)
+winget install --id Cloudflare.cloudflared
+cloudflared tunnel --url http://localhost:8081
+
+:: หรือ ngrok
+winget install --id Ngrok.Ngrok
+ngrok http 8081
 ```
 
-ตัวอย่าง webhook ที่ Kick ยิงมา (สำหรับไปเขียนฝั่งรับ):
+จะได้ URL แบบ `https://xxxx-yyyy.trycloudflare.com` → ปลายทาง webhook ของคุณคือ `https://xxxx-yyyy.trycloudflare.com/kick`
+
+### 6.2) เปิดตัวรับ webhook (ตรวจลายเซ็นให้อัตโนมัติ)
+
+```cmd
+cd /d "D:\HermesAI\OBS\files"
+"C:\Users\mail3\AppData\Local\Programs\Python\Python312\python.exe" kick_events.py serve ^
+  --port 8081 --path /kick --write chat.ndjson --public-url https://xxxx-yyyy.trycloudflare.com
+```
+
+* ตรวจ `Kick-Event-Signature` ด้วยกุญแจสาธารณะที่ดึงจาก `https://api.kick.com/public/v1/public-key` (ไม่ hardcode — Kick หมุนกุญแจได้)
+* ลายเซ็นผิด/ไม่มี → ตอบ **401** และไม่บันทึก · ลายเซ็นถูก → ตอบ 200 เร็ว ๆ (Kick ต้องการแบบนั้น)
+* `--json-lines` พิมพ์แชทเป็น JSON 1 บรรทัด/ข้อความ (ต่อเข้า HermesAI ได้เลย) · `--forward http://127.0.0.1:9000/chat` ส่งต่อให้โปรแกรมอื่น
+* ข้อกำหนดการเซ็น (จากเอกสาร Kick): เซ็นสตริง `Kick-Event-Message-Id + "." + Timestamp + "." + raw body` ด้วย **RSASSA-PKCS1-v1_5 + SHA-256** — สคริปต์นี้ตรวจให้ด้วย Python มาตรฐานล้วน (ไม่ต้อง `pip install` อะไร)
+
+### 6.3) ลงทะเบียนกับ Kick (ใช้ token ที่มีสโคป `events:subscribe`)
+
+```cmd
+:: ต้องมี scope events:subscribe — ถ้า token เดิมมีแค่ chat:write ให้ขอใหม่:
+::   python kick_oauth.py login --scopes "user:read chat:write events:subscribe"
+
+"...\python.exe" kick_events.py subscribe ^
+  --webhook https://xxxx-yyyy.trycloudflare.com/kick ^
+  --broadcaster 123456 ^
+  --events chat.message.sent
+
+"...\python.exe" kick_events.py list
+"...\python.exe" kick_events.py delete --id <subscription-id>
+```
+
+> `broadcaster_user_id` หาได้จาก `kick_chat.py resolve --channel <slug>` หรือ Console: `fetch('/api/v2/channels/<slug>').then(r=>r.json()).then(d=>console.log(d.user_id))`
+
+### 6.4) ตัวอย่าง event ที่จะได้รับ
+
+```
+[แชท] (moderator) viewer1: hello [emote:4148074:HYPERCLAP]
+```
+และในไฟล์ `chat.ndjson` (บรรทัดละ event):
 
 ```json
-{
-  "message_id": "unique_message_id_123",
-  "broadcaster": { "user_id": 123456789, "username": "broadcaster_name" },
-  "sender": { "user_id": 987654321, "username": "sender_name",
-              "identity": { "username_color": "#FF5733",
-                            "badges": [{ "type": "moderator", "text": "Moderator" }] } },
-  "content": "Hello [emote:4148074:HYPERCLAP]",
-  "created_at": "2025-01-14T16:08:06Z"
-}
+{"id":"01J...","event":"chat.message.sent","received_at":"2026-10-14T08:12:03","verified":true,
+ "payload":{"message_id":"...","broadcaster":{"user_id":123456789,"username":"broadcaster_name"},
+ "sender":{"user_id":987654321,"username":"sender_name",
+   "identity":{"username_color":"#FF5733","badges":[{"type":"moderator","text":"Moderator"}]}},
+ "content":"Hello [emote:4148074:HYPERCLAP]","created_at":"2025-01-14T16:08:06Z"}}
+```
+
+สโคป `events:subscribe` เปิด event เหล่านี้ทั้งหมด: `chat.message.sent`, `channel.followed`, `channel.subscription.new|renewal|gifts`, `channel.reward.redemption.updated`, `livestream.status.updated`, `livestream.metadata.updated`, `moderation.banned`, `kicks.gifted`
+
+### 6.5) ⚠️ เรื่อง "API polling" ที่มักถูกแนะนำผิด
+
+`https://kick.com/api/v2/channels/{slug}/chat` **ไม่ใช่ endpoint ที่มีอยู่** และ Kick **ไม่เปิดประวัติแชทย้อนหลัง** ให้ดึงผ่าน API สาธารณะ — การอ่านย้อนหลังทำไม่ได้ทั้ง Pusher (live เท่านั้น ไม่มี replay) และ webhook (ได้เฉพาะตอนออนไลน์)
+ถ้าต้องการ "ไม่พลาดข้อความ" ให้ยึด 2 ทางนี้ + เขียน NDJSON เก็บเอง (ตามตัวอย่างด้านบน)
+
+ส่งข้อความเข้าหาแชท (ฝั่งส่ง) ใช้ API ทางการ ซึ่งรองรับอยู่แล้ว:
+
+```cmd
+:: ต้องมี token ที่มี scope chat:write
+"...\python.exe" kick_chat.py send --channel yourslug --broadcaster-user-id 123456 --message "สวัสดีครับ"
 ```
 
 ---
@@ -450,6 +636,8 @@ taskkill /IM python.exe /F
 | `kick_chat.py resolve --channel <slug>` | หา channel_id / chatroom_id / broadcaster_user_id |
 | `kick_chat.py listen --chatroom <id> [--json]` | ฟังแชทสด (keepalive + reconnect อัตโนมัติ) |
 | `kick_chat.py send --channel <slug> --message "..."` | ส่งข้อความผ่าน API ทางการ (ต้องมี scope `chat:write`) |
-| `tests/test_kick_chat.py` | เทสต์ออฟไลน์ 13 เคส (มี Pusher server จำลองในตัว) |
+| `ws_probe.py` | **ไฟล์เดียว 0 dependency** — ตรวจ DNS/TCP/TLS(ใบรับรอง)/WS handshake/key (จับอักขระซ่อน) |
+| `kick_events.py` | Events API ทางการ: `subscribe` / `list` / `delete` / `serve` (ตรวจลายเซ็น RSA) / `verify` |
+| `tests/` | เทสต์ออฟไลน์รวม 58 เคส (Pusher server จำลอง + กุญแจ RSA ทดสอบในตัว) |
 
 อ้างอิง: [Kick Dev Docs](https://github.com/KickEngineering/KickDevDocs) · [Pusher Channels protocol](https://pusher.com/docs/channels/library_auth_reference/pusher-websockets-protocol/) · repos ที่อ้างในข้อ 1
