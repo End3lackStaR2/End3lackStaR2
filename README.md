@@ -11,7 +11,7 @@ Config files for my GitHub profile.
 - **[kick_events.py](kick_events.py)** — Events API ทางการ (webhook): `setup` / `serve` (+overlay โปร่งใสสำหรับ OBS ผ่าน SSE) / `subscribe` / `list` / `delete` / `status` / `verify` (ตรวจลายเซ็น RSA ด้วย stdlib)
 - **[kick-setup.md](kick-setup.md)** — ตั้งค่า Kick Client ID / Secret + OAuth 2.1 (PKCE) บน Windows
 - **[kick_oauth.py](kick_oauth.py)** — CLI OAuth: `setup` / `login` / `check` / `refresh` / `revoke`
-- **`tests/`** — เทสต์ออฟไลน์ 63 เคส + เทสต์หน้าเว็บ 2 ไฟล์ รันทั้งหมดด้วยคำสั่งเดียวได้:
+- **`tests/`** — เทสต์ออฟไลน์ 64 เคส + เทสต์หน้าเว็บ 2 ไฟล์ รันทั้งหมดด้วยคำสั่งเดียวได้:
   ```cmd
   python tests/run_all.py
   ```

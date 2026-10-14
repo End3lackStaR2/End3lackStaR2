@@ -862,7 +862,8 @@ def cmd_serve(args) -> int:
 
     public_url = args.public_url or cfg.get("webhook_url") or ""
     if public_url:
-        print(f"      ลงทะเบียนกับ Kick ด้วย:  python kick_events.py subscribe --webhook {public_url}", flush=True)
+        shown_url = ensure_path(public_url, path)
+        print(f"      ลงทะเบียนกับ Kick ด้วย:  python kick_events.py subscribe --webhook {shown_url}", flush=True)
 
     try:
         server.serve_forever()
@@ -1081,6 +1082,21 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--public-key-file", dest="public_key_file", help="ใช้ PEM ในเครื่องแทนการดึงจากเน็ต")
     p.set_defaults(func=cmd_verify)
     return parser
+
+
+def ensure_path(url: str, path: str) -> str:
+    """ทำให้ URL ของ webhook ลงท้ายด้วย path ที่ตัวรับเปิดอยู่จริง
+
+    Kick จะยิงมาที่ URL ที่ลงทะเบียนไว้ "ตรงตัว" ถ้าผู้ใช้ให้มาแค่โดเมนของ tunnel
+    (เช่น https://abc.trycloudflare.com) แล้วไม่ได้เติม /kick ต่อท้าย event จะไม่เข้าเลย
+    """
+    url = (url or "").strip().rstrip("/")
+    path = "/" + (path or "").strip("/")
+    if not url:
+        return ""
+    if path != "/" and not url.endswith(path):
+        url = url + path
+    return url
 
 
 def prescan_option(argv: list[str], name: str):

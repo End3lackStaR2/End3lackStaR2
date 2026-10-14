@@ -708,5 +708,19 @@ def test_hub_publish_unsubscribe() -> None:
     assert hub.count == 1
 
 
+
+# ---------------------------------------------------------------------------
+# เติม path ให้ URL ของ webhook (สาเหตุอันดับ 1 ของ "event ไม่เข้า": URL ไม่มี /kick)
+# ---------------------------------------------------------------------------
+def test_ensure_path_for_webhook_url() -> None:
+    assert ke.ensure_path("https://abc.trycloudflare.com", "/kick") == "https://abc.trycloudflare.com/kick"
+    assert ke.ensure_path("https://abc.trycloudflare.com/", "/kick") == "https://abc.trycloudflare.com/kick"
+    assert ke.ensure_path("https://abc.trycloudflare.com/kick", "/kick") == "https://abc.trycloudflare.com/kick"
+    assert ke.ensure_path("https://abc.trycloudflare.com/kick/", "/kick") == "https://abc.trycloudflare.com/kick"
+    assert ke.ensure_path("  https://abc.trycloudflare.com/kick  ", "/kick") == "https://abc.trycloudflare.com/kick"
+    assert ke.ensure_path("", "/kick") == ""
+    assert ke.ensure_path("https://abc.trycloudflare.com", "/") == "https://abc.trycloudflare.com"
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

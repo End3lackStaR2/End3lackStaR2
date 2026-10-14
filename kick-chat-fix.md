@@ -735,7 +735,7 @@ cd /d "D:\HermesAI\OBS\files"
 | `ws_probe.py` | **ไฟล์เดียว 0 dependency** — ตรวจ DNS/TCP/TLS(ใบรับรอง)/WS handshake/key (จับอักขระซ่อน) |
 | `kick_probe.html` | **ทดสอบในเบราว์เซอร์** — ไล่หา cluster+key ที่ใช้ได้จริง (ไม่ต้องมี Python) |
 | `kick_events.py` | Events API ทางการ: `setup` / `serve` (+overlay/SSE) / `subscribe` / `list` / `delete` / `status` / `verify` |
-| `tests/` | เทสต์ออฟไลน์: Python 63 เคส + JavaScript 2 ไฟล์ (หน้า probe และหน้า overlay) |
+| `tests/` | เทสต์ออฟไลน์: Python 64 เคส + JavaScript 2 ไฟล์ (หน้า probe และหน้า overlay) |
 
 **ตรวจว่าไฟล์ที่โหลดมาทำงานถูกต้อง** (ไม่ต้องต่อเน็ต ไม่ต้องมี Kick token):
 
