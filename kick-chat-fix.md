@@ -723,6 +723,16 @@ cd /d "D:\HermesAI\OBS\files"
 | `ws_probe.py` | **ไฟล์เดียว 0 dependency** — ตรวจ DNS/TCP/TLS(ใบรับรอง)/WS handshake/key (จับอักขระซ่อน) |
 | `kick_probe.html` | **ทดสอบในเบราว์เซอร์** — ไล่หา cluster+key ที่ใช้ได้จริง (ไม่ต้องมี Python) |
 | `kick_events.py` | Events API ทางการ: `setup` / `serve` (+overlay/SSE) / `subscribe` / `list` / `delete` / `status` / `verify` |
-| `tests/` | เทสต์ออฟไลน์รวม 63 เคส (Pusher server จำลอง + กุญแจ RSA ทดสอบในตัว + overlay/SSE) |
+| `tests/` | เทสต์ออฟไลน์: Python 63 เคส + JavaScript 2 ไฟล์ (หน้า probe และหน้า overlay) |
+
+**ตรวจว่าไฟล์ที่โหลดมาทำงานถูกต้อง** (ไม่ต้องต่อเน็ต ไม่ต้องมี Kick token):
+
+```cmd
+cd /d D:\HermesAI\OBS\files
+"...\python.exe" tests\run_all.py
+```
+
+ผลที่ควรเห็น: `ผ่าน 5/5 ชุด` — ถ้าเครื่องไม่มี Node.js จะขึ้น `ผ่าน 3/5 ชุด · ข้าม 2` ซึ่ง **ถือว่าปกติ**
+(เทสต์หน้าเว็บ 2 ตัวนั้นต้องใช้ Node ถ้าไม่มีก็ข้ามได้ ไม่กระทบการใช้งานจริง)
 
 อ้างอิง: [Kick Dev Docs](https://github.com/KickEngineering/KickDevDocs) · [Pusher Channels protocol](https://pusher.com/docs/channels/library_auth_reference/pusher-websockets-protocol/) · repos ที่อ้างในข้อ 1

@@ -11,6 +11,10 @@ Config files for my GitHub profile.
 - **[kick_events.py](kick_events.py)** — Events API ทางการ (webhook): `setup` / `serve` (+overlay โปร่งใสสำหรับ OBS ผ่าน SSE) / `subscribe` / `list` / `delete` / `status` / `verify` (ตรวจลายเซ็น RSA ด้วย stdlib)
 - **[kick-setup.md](kick-setup.md)** — ตั้งค่า Kick Client ID / Secret + OAuth 2.1 (PKCE) บน Windows
 - **[kick_oauth.py](kick_oauth.py)** — CLI OAuth: `setup` / `login` / `check` / `refresh` / `revoke`
-- **`tests/`** — เทสต์ออฟไลน์ 63 เคส (`tests/test_kick_chat.py`, `tests/test_ws_probe_events.py`, `tests/test_kick_oauth.py`)
+- **`tests/`** — เทสต์ออฟไลน์ 63 เคส + เทสต์หน้าเว็บ 2 ไฟล์ รันทั้งหมดด้วยคำสั่งเดียวได้:
+  ```cmd
+  python tests/run_all.py
+  ```
+  (เทสต์ JavaScript ต้องมี Node.js — ถ้าไม่มีจะข้ามให้ · ใช้ `--python-only` ถ้าไม่ต้องการรัน)
 
 > ไฟล์ `kick_credentials.json` / `kick_tokens.json` / `kick_chat_config.json` เป็นข้อมูลลับ ถูกกันไว้ใน `.gitignore` แล้ว

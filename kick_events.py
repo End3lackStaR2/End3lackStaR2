@@ -527,7 +527,7 @@ OVERLAY_HTML = """<!doctype html>
       try{var m=JSON.parse(e.data);
         if(m.kind==='chat'){add(m);}
         else if(m.kind==='stat'){stat.textContent='live · '+m.text;}
-      }catch(err){}
+      }catch(err){ if(window.console){console.error('overlay: รับ event ไม่สำเร็จ',err);} }
     };
     es.onerror=function(){stat.textContent='reconnecting…';es.close();setTimeout(connect,1500);};
   }
