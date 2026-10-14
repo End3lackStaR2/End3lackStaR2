@@ -71,6 +71,13 @@ if ($raw.Length -lt 50000 -or $raw -notmatch 'hermes\.ps1 v' -or $raw -notmatch 
 Write-Host ("พร้อมใช้: " + (Get-Item "$d\hermes.ps1").Length + " bytes")
 ```
 
+## ทางเลือกที่ไม่ต้องโหลดอะไรเลย
+
+ถ้าดาวน์โหลดจาก GitHub ไม่ได้ หรือข้อความที่คัดลอกโดน markdown ทำ URL พัง ให้ใช้
+**[MANUAL-FALLBACK-TH.md](MANUAL-FALLBACK-TH.md)** — 5 ท่อน copy-paste ที่ใช้แค่ PowerShell
+ในเครื่อง (ทดสอบ key สด → แก้ config → หยุดเฉพาะโปรเซสที่ใช่ → ดู log เฉพาะที่ใหม่จริง → เก็บหลักฐาน)
+และมี "ท่อน 0" สำหรับโหลดเครื่องมือเต็มแบบที่ markdown ทำ URL พังไม่ได้ (ต่อ URL จากชิ้นส่วน)
+
 ## โหมดต่าง ๆ
 
 | คำสั่ง | ทำอะไร |
