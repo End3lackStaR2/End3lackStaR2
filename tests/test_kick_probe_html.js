@@ -58,8 +58,14 @@ const document = {
   body: { appendChild(){} }
 };
 
-// ---- WebSocket shim: จำลอง Pusher — รับเฉพาะ 32cbd69e4b950bf97679 @ us2 ----
-const GOOD_KEY = '32cbd69e4b950bf97679';
+// ---- WebSocket shim: จำลอง Pusher — รับเฉพาะ key ปัจจุบัน @ us2 ----
+// ดึง key จาก ws_probe.py เพื่อไม่ให้เทสต์หลุดจากค่าที่เครื่องมือใช้จริง
+const { execFileSync } = require('child_process');
+const GOOD_KEY = execFileSync('python3', ['-c',
+  'import sys; sys.path.insert(0, r"' + path.join(__dirname, '..') + '"); import ws_probe; print(ws_probe.DEFAULT_KEY)'],
+  { encoding: 'utf8' }).trim();
+console.log('   ใช้ key ปัจจุบันจาก ws_probe.py:', GOOD_KEY);
+const RETIRED_KEY = '32cbd69e4b950bf97679';
 let opened = [];
 class FakeWS {
   constructor(url) {
@@ -108,8 +114,9 @@ function failExit(msg) { console.log('❌ ' + msg); console.log('\nมีข้�
   const goodHit = opened.some(o => o.key === GOOD_KEY && o.cluster === 'us2');
   if (!goodHit) failExit('sweep ไม่ได้ทดสอบคู่ที่ถูก (us2 + key ที่ดี)');
   const text = JSON.stringify(out) + ' ' + st;
-  if (!/32cbd69e4b950bf97679/.test(text)) failExit('ผลลัพธ์ไม่แสดง key ที่ชนะ | ' + text.slice(0, 400));
+  if (!text.includes(GOOD_KEY)) failExit('ผลลัพธ์ไม่แสดง key ที่ชนะ | ' + text.slice(0, 400));
   if (!/us2/.test(text)) failExit('ผลลัพธ์ไม่แสดง cluster ที่ชนะ');
+  if (!/key ปัจจุบันของ Kick/.test(text)) failExit('ไม่ได้ยืนยันว่า key ที่ชนะคือ key ปัจจุบันของ Kick');
   console.log('✅ sweep ทดสอบทุกคู่ และรายงานผู้ชนะ (us2 + key) ออกทาง UI');
   console.log('   สถานะ:', st); console.log('   การ์ดผู้ชนะ:', text.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 300));
   console.log('\nผ่านทั้งหมด');

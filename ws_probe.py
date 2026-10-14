@@ -4,12 +4,18 @@
 
 ตอบคำถามเดียว: ทำไม Pusher ถึงตอบ "App key ... not in this cluster"
 
+สำคัญ (ต.ค. 2026): Kick ปิด Pusher app ตัวเก่า `32cbd69e4b950bf97679` แล้ว
+ทุกการเชื่อมต่อด้วย key นั้นจะได้ `4001 App key not in this cluster`
+key ที่ใช้ได้ตอนนี้คือ `34bf7a0ff419a2a775b9` (cluster us2) และ Kick มี endpoint
+ให้ถามได้เสมอว่า "ตอนนี้ใช้ app ไหน": POST https://web.kick.com/api/v1/realtime/connection
+
 ใช้:
-  python ws_probe.py                                  # ทดสอบค่ามาตรฐานที่ Kick ใช้
-  python ws_probe.py --url "wss://ws-us2.pusher.com/app/32cbd...?protocol=7&..."
-  python ws_probe.py --key 32cbd69e4b950bf97679 --cluster us2
+  python ws_probe.py                                  # ทดสอบค่ามาตรฐานที่ Kick ใช้ตอนนี้
+  python ws_probe.py --discover                       # ถาม Kick ตรง ๆ แล้วใช้ key/cluster ที่ได้
+  python ws_probe.py --url "wss://ws-us2.pusher.com/app/34bf...?protocol=7&..."
+  python ws_probe.py --key 34bf7a0ff419a2a775b9 --cluster us2
   python ws_probe.py --from-config "D:\\HermesAI\\OBS\\files\\config.json"
-  python ws_probe.py --key ... --repeat 2             # ยิงซ้ำเพื่อดูว่า DNS เปลี่ยน/ไม่คงที่ไหม
+  python ws_probe.py --repeat 2                       # ยิงซ้ำเพื่อดูว่า DNS เปลี่ยน/ไม่คงที่ไหม
 
 สิ่งที่ตรวจ:
   1) DNS  → IP ที่ได้ (mark ถ้าเป็น IP วงใน = ถูกดัก)
@@ -32,13 +38,22 @@ import ssl
 import struct
 import sys
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
+import uuid
 
-DEFAULT_KEY = "32cbd69e4b950bf97679"
+# key ที่ Kick ใช้อยู่จริงตอนนี้ (ค่าที่ Kick คืนจาก web.kick.com/api/v1/realtime/connection วันที่ 13 ต.ค. 2026)
+DEFAULT_KEY = "34bf7a0ff419a2a775b9"
+# key เก่าที่ Kick ปิดไปแล้ว (ต.ค. 2026) — เจอเมื่อไรให้เตือนเสมอ
+RETIRED_KEYS = ("32cbd69e4b950bf97679",)
 DEFAULT_CLUSTER = "us2"
 HOST_TEMPLATE = "ws-{cluster}.pusher.com"
-KNOWN_KEYS = (DEFAULT_KEY, "34bf7a0ff419a2a775b9")
+KNOWN_KEYS = (DEFAULT_KEY,)
 KEY_RE = re.compile(r"^[0-9a-f]{12,40}$", re.I)
+# endpoint ที่ Kick ใช้บอกว่า "ตอนนี้เชื่อมต่อ provider ไหน ด้วย app อะไร"
+REALTIME_CONNECTION_URL = "https://web.kick.com/api/v1/realtime/connection"
+PUSHER_VERSION = "8.4.0"
 
 
 def out(msg: str = "") -> None:
@@ -73,9 +88,14 @@ def key_report(key: str) -> list[str]:
         issues.append(f"ตำแหน่ง {i}: {code} ({name})")
     if not KEY_RE.match(key):
         issues.append(f"รูปแบบไม่ใช่ hex 12-40 ตัว (ตอนนี้ยาว {len(key)})")
-    if key.lower() not in KNOWN_KEYS:
+    if key.lower() in RETIRED_KEYS:
         issues.append(
-            f"ไม่ใช่ key สาธารณะที่รู้จัก ({DEFAULT_KEY}) — "
+            f"key นี้ถูก Kick ปิดไปแล้ว (ต.ค. 2026) — จะได้ error 4001 'not in this cluster' เสมอ; "
+            f"ใช้ {DEFAULT_KEY} แทน (หรือรัน --discover เพื่อถาม Kick)"
+        )
+    elif key.lower() not in KNOWN_KEYS:
+        issues.append(
+            f"ไม่ใช่ key สาธารณะที่รู้จักตอนนี้ ({DEFAULT_KEY}) — "
             "ถ้าเป็นค่าจาก Developer Portal นั่นคือ OAuth client_id ซึ่งใช้กับ Pusher ไม่ได้"
         )
     return issues
@@ -92,6 +112,70 @@ def print_key_check(key: str) -> None:
         for issue in issues:
             out(f"   [!!] {issue}")
     out()
+
+
+# ---------------------------------------------------------------------------
+def parse_realtime_connection(payload) -> tuple[str, str] | None:
+    """ดึง (key, cluster) จากคำตอบของ web.kick.com/api/v1/realtime/connection
+
+    รูปแบบ: {"data": {"connections": [{"provider": "pusher",
+              "credentials": {"app_key": "...", "cluster": "us2"}}]}}
+    """
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    connections = data.get("connections") if isinstance(data, dict) else None
+    if not isinstance(connections, list):
+        return None
+    for item in connections:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("provider", "")).lower() != "pusher":
+            continue
+        creds = item.get("credentials")
+        if not isinstance(creds, dict):
+            continue
+        key = str(creds.get("app_key") or "").strip()
+        cluster = str(creds.get("cluster") or DEFAULT_CLUSTER).strip() or DEFAULT_CLUSTER
+        if key and KEY_RE.match(key):
+            return key, cluster
+    return None
+
+
+def fetch_official_connection(timeout: float = 10.0) -> tuple[tuple[str, str] | None, str]:
+    """ถาม Kick ว่าจะให้เชื่อมต่อ Pusher app ไหน (คืน ((key, cluster) หรือ None, ข้อความอธิบาย)"""
+    import urllib.request
+
+    body = json.dumps({
+        "client": {"id": str(uuid.uuid4()), "type": "web"},
+        "capabilities": {"accepted_providers": [{"provider": "pusher"}]},
+    }).encode()
+    request = urllib.request.Request(
+        REALTIME_CONNECTION_URL,
+        data=body,
+        headers={
+            "content-type": "application/json",
+            "accept": "application/json",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) ws_probe.py",
+            "origin": "https://kick.com",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return None, f"Kick ตอบ HTTP {exc.code} (ถ้า 403 = Cloudflare บล็อกเครื่องนี้ ให้ใช้ค่าเริ่มต้น {DEFAULT_KEY})"
+    except Exception as exc:  # noqa: BLE001 — รายงานทุกความล้มเหลวให้เห็น
+        return None, f"ติดต่อ web.kick.com ไม่ได้: {type(exc).__name__}: {exc}"
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, "คำตอบไม่ใช่ JSON (อาจโดน Cloudflare กั้น)"
+    found = parse_realtime_connection(payload)
+    if not found:
+        return None, "คำตอบไม่มีข้อมูล pusher/credentials"
+    return found, "ok"
 
 
 # ---------------------------------------------------------------------------
@@ -278,6 +362,9 @@ def probe(url: str, timeout: float, show_frames: int = 3) -> int:
     key = key_match.group(1) if key_match else ""
     if key:
         print_key_check(key)
+        if key.strip().lower() in RETIRED_KEYS:
+            out(f"[!!] key นี้อยู่ในรายการที่ Kick ปิดแล้ว — ผลที่ได้จะเป็นการยืนยันว่าเก่า ไม่ใช่ปัญหาเครื่องคุณ")
+            out()
 
     # 1) DNS
     t0 = time.time()
@@ -438,6 +525,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--key", help=f"app key (ค่าเริ่มต้น {DEFAULT_KEY})")
     parser.add_argument("--cluster", help=f"cluster (ค่าเริ่มต้น {DEFAULT_CLUSTER})")
     parser.add_argument("--from-config", dest="from_config", help="อ่าน key/url จากไฟล์ config (JSON หรือข้อความ)")
+    parser.add_argument("--discover", action="store_true",
+                        help="ถาม Kick ตรง ๆ ว่าใช้ Pusher app ไหน แล้วทดสอบค่านั้น")
     parser.add_argument("--timeout", type=float, default=12.0, help="หมดเวลา (วินาที)")
     parser.add_argument("--repeat", type=int, default=1, help="ยิงซ้ำกี่ครั้ง (ดู DNS/เส้นทางไม่คงที่)")
     args = parser.parse_args(argv)
@@ -448,6 +537,24 @@ def main(argv: list[str] | None = None) -> int:
 
     url = args.url or ""
     key = args.key or ""
+
+    if args.discover:
+        out("=== ถาม Kick: ตอนนี้ให้เชื่อมต่อ Pusher app ไหน ===")
+        found, reason = fetch_official_connection()
+        if found:
+            key, cluster = found
+            url = (
+                f"wss://{HOST_TEMPLATE.format(cluster=cluster)}/app/{key}"
+                f"?protocol=7&client=js&version={PUSHER_VERSION}&flash=false"
+            )
+            out(f"[OK]  Kick บอกให้ใช้: key={key} · cluster={cluster}")
+            out("      (ใช้ค่านี้ได้เลย — ไม่ต้องเดาอีก)")
+        else:
+            out(f"[!!]  ถามไม่ได้: {reason}")
+            if key.strip().lower() in RETIRED_KEYS or not key:
+                key = DEFAULT_KEY
+            out(f"      ใช้ค่าเริ่มต้นในไฟล์นี้แทน: {key} · cluster {args.cluster or DEFAULT_CLUSTER}")
+        out()
 
     if args.from_config:
         out(f"=== อ่านค่าจาก {args.from_config} ===")
@@ -461,7 +568,7 @@ def main(argv: list[str] | None = None) -> int:
         key = key or DEFAULT_KEY
         url = (
             f"wss://{HOST_TEMPLATE.format(cluster=cluster)}/app/{key}"
-            "?protocol=7&client=js&version=8.4.0-rc2&flash=false"
+            f"?protocol=7&client=js&version={PUSHER_VERSION}&flash=false"
         )
 
     if not key:

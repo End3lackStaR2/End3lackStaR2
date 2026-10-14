@@ -57,8 +57,8 @@
   <div class="card">
     <h2>1) ค่าเริ่มต้น</h2>
     <label>App keys (บรรทัดละ 1 ค่า — เพิ่มค่าที่คุณสงสัยได้)</label>
-    <textarea id="keys">32cbd69e4b950bf97679
-34bf7a0ff419a2a775b9</textarea>
+    <textarea id="keys">34bf7a0ff419a2a775b9
+32cbd69e4b950bf97679</textarea>
     <label>Cluster ที่จะทดสอบ (บรรทัดละ 1 ค่า)</label>
     <textarea id="clusters">us2
 us3
@@ -118,7 +118,9 @@ in1</textarea>
 <script>
 (function () {
   "use strict";
-  const KNOWN_PUBLIC_KEY = "32cbd69e4b950bf97679";
+  // ต.ค. 2026 Kick ปิด Pusher app เก่า → ใช้ CURRENT_KEY เป็นค่าที่ถูกต้องตอนนี้
+  const CURRENT_KEY = "34bf7a0ff419a2a775b9";
+  const RETIRED_KEYS = ["32cbd69e4b950bf97679"];
   const VERSION = "8.4.0-rc2";
   const resultsBody = document.querySelector("#results tbody");
   const statusEl = document.getElementById("status");
@@ -281,7 +283,7 @@ in1</textarea>
     winnerEl.innerHTML = `<div class="win">
       <b>✅ ใช้ค่านี้:</b><br>
       <code>${best.url}</code><br>
-      <span class="muted">cluster = ${best.cluster} · key = ${best.key}${best.key === KNOWN_PUBLIC_KEY ? " (key สาธารณะเดิม — ปัญหาอยู่ที่ cluster/host)" : " (key ต่างจากที่รู้จัก — Kick หมุน key!)"}</span>
+      <span class="muted">cluster = ${best.cluster} · key = ${best.key}${best.key === CURRENT_KEY ? " (key ปัจจุบันของ Kick ✅)" : (RETIRED_KEYS.includes(best.key) ? " (key ที่ Kick ปิดแล้ว — ใช้ได้ชั่วคราวเท่านั้น)" : " (key ต่างจากที่รู้จัก — Kick อาจหมุน key!)")}</span>
       <div class="row" style="margin-top:10px">
         <button id="copyUrl">คัดลอก URL</button>
         <button class="ghost" id="copyPy">คัดลอกคำสั่ง Python ยืนยันซ้ำ</button>
@@ -295,6 +297,31 @@ in1</textarea>
     }, null, 2);
 
     document.getElementById("copyUrl").onclick = () => copy(best.url, "คัดลอก URL แล้ว");
+    document.getElementById("askKick").onclick = async () => {
+      statusEl.textContent = "กำลังถาม Kick…";
+      try {
+        const resp = await fetch("https://web.kick.com/api/v1/realtime/connection", {
+          method: "POST",
+          headers: { "content-type": "application/json", "accept": "application/json" },
+          body: JSON.stringify({ client: { id: crypto.randomUUID(), type: "web" },
+                                 capabilities: { accepted_providers: [{ provider: "pusher" }] } }),
+          credentials: "omit",
+        });
+        const j = await resp.json();
+        const conn = (((j || {}).data || {}).connections || []).find(c => c && c.provider === "pusher");
+        const creds = (conn && conn.credentials) || null;
+        if (creds && creds.app_key) {
+          document.getElementById("keys").value = creds.app_key;
+          if (creds.cluster) document.getElementById("clusters").value = creds.cluster;
+          statusEl.textContent = `Kick บอกให้ใช้ key=${creds.app_key} cluster=${creds.cluster || "us2"} — กำลังทดสอบ`;
+          run();
+        } else {
+          statusEl.textContent = "Kick ตอบแต่ไม่มีข้อมูล pusher — คัดลอก response ไปวางในช่องด้านล่างได้";
+        }
+      } catch (err) {
+        statusEl.textContent = "ถาม Kick ไม่ได้ (CORS/เน็ต) — ใช้วิธีวางผล Console ด้านล่างแทน";
+      }
+    };
     document.getElementById("copyPy").onclick = () => copy(pyCmd, "คัดลอกคำสั่ง Python แล้ว");
     document.getElementById("copyCfg").onclick = () => copy(cfg, "คัดลอก JSON แล้ว");
 

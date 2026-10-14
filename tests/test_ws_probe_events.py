@@ -22,6 +22,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import kick_chat as kc  # noqa: E402
 import kick_events as ke  # noqa: E402
 import ws_probe as wp  # noqa: E402
 from test_kick_chat import BAD_KEY, GOOD_KEY, MockPusherServer  # noqa: E402
@@ -99,7 +100,10 @@ def test_ws_probe_flags_mismatch_between_sent_and_seen_key() -> None:
 
 
 def test_ws_probe_key_report_detection() -> None:
-    assert wp.key_report(GOOD_KEY) == []
+    assert wp.key_report(wp.DEFAULT_KEY) == []
+    # key เก่าที่ Kick ปิดแล้ว ต้องเตือนว่าเก่า ไม่ใช่แค่ "ไม่รู้จัก"
+    retired = wp.key_report(wp.RETIRED_KEYS[0])
+    assert any("ถูก Kick ปิดไปแล้ว" in issue for issue in retired), retired
     zero_width = wp.key_report(GOOD_KEY + "\u200b")
     assert any("U+200B" in issue for issue in zero_width)
     assert any("ZERO WIDTH" in issue for issue in zero_width)
@@ -720,6 +724,173 @@ def test_ensure_path_for_webhook_url() -> None:
     assert ke.ensure_path("  https://abc.trycloudflare.com/kick  ", "/kick") == "https://abc.trycloudflare.com/kick"
     assert ke.ensure_path("", "/kick") == ""
     assert ke.ensure_path("https://abc.trycloudflare.com", "/") == "https://abc.trycloudflare.com"
+
+
+# ---------------------------------------------------------------------------
+# การหมุน key ของ Kick (ต.ค. 2026) — key เก่าถูกปิด, มี endpoint ให้ถามของจริง
+# ---------------------------------------------------------------------------
+def test_retired_key_is_flagged() -> None:
+    """key เก่าที่ Kick ปิดแล้วต้องขึ้นเตือนชัด ๆ ไม่ใช่แค่ 'ไม่รู้จัก'"""
+    for retired in wp.RETIRED_KEYS:
+        issues = wp.key_report(retired)
+        assert any("ถูก Kick ปิดไปแล้ว" in issue for issue in issues), issues
+    # key ปัจจุบันต้องไม่มีการเตือน
+    assert wp.key_report(wp.DEFAULT_KEY) == [], wp.key_report(wp.DEFAULT_KEY)
+    # ค่ามั่ว ๆ ต้องยังเตือนว่าไม่ใช่ key ที่รู้จัก
+    assert any("ไม่ใช่ key สาธารณะที่รู้จัก" in i for i in wp.key_report("ffffffffffffffffffff"))
+
+
+def test_default_key_is_the_current_one() -> None:
+    """ค่าเริ่มต้นของทั้งสองเครื่องมือต้องตรงกันและไม่ใช่ key ที่ถูกปิด"""
+    assert wp.DEFAULT_KEY == "34bf7a0ff419a2a775b9"
+    assert wp.DEFAULT_KEY not in wp.RETIRED_KEYS
+    assert kc.DEFAULT_APP_KEY == wp.DEFAULT_KEY
+    assert kc.RETIRED_APP_KEYS == tuple(wp.RETIRED_KEYS)
+    assert wp.DEFAULT_KEY in kc.FALLBACK_APP_KEYS or wp.DEFAULT_KEY not in kc.FALLBACK_APP_KEYS  # ไม่ผูกความหมาย
+
+
+def test_parse_realtime_connection_shapes() -> None:
+    good = {"data": {"connections": [{"provider": "pusher",
+                                      "credentials": {"app_key": wp.DEFAULT_KEY, "cluster": "us2"}}]}}
+    assert wp.parse_realtime_connection(good) == (wp.DEFAULT_KEY, "us2")
+    # ไม่มี cluster → ใช้ค่าเริ่มต้น
+    assert wp.parse_realtime_connection(
+        {"data": {"connections": [{"provider": "pusher", "credentials": {"app_key": "abc123456789"}}]}}
+    ) == ("abc123456789", "us2")
+    # provider อื่น / รูปแบบผิด / ว่าง ต้องคืน None ไม่โยน exception
+    assert wp.parse_realtime_connection({"data": {"connections": [{"provider": "agora"}]}}) is None
+    assert wp.parse_realtime_connection({"data": {}}) is None
+    assert wp.parse_realtime_connection({}) is None
+    assert wp.parse_realtime_connection(None) is None
+    assert wp.parse_realtime_connection("ไม่ใช่ dict") is None
+
+
+def test_fetch_official_connection_reports_reason() -> None:
+    """ติดต่อไม่ได้ต้องคืนเหตุผล ไม่ใช่โยน exception"""
+    original = wp.urllib.request.urlopen
+
+    def boom(*_a, **_kw):
+        raise wp.urllib.error.URLError("sandbox ไม่มีเน็ต")
+
+    wp.urllib.request.urlopen = boom
+    try:
+        found, reason = wp.fetch_official_connection(timeout=1.0)
+    finally:
+        wp.urllib.request.urlopen = original
+    assert found is None
+    assert "web.kick.com" in reason or "URLError" in reason, reason
+
+
+def test_fetch_official_connection_parses_response() -> None:
+    """ตอบกลับปกติ → คืน (key, cluster) ที่ถูกต้อง"""
+    payload = json.dumps({"data": {"connections": [
+        {"provider": "pusher", "credentials": {"app_key": wp.DEFAULT_KEY, "cluster": "us2"}}]}}).encode()
+
+    class FakeResponse:
+        def read(self) -> bytes:
+            return payload
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    original = wp.urllib.request.urlopen
+    captured: dict = {}
+
+    def fake_urlopen(request, timeout=None):
+        captured["url"] = request.full_url
+        captured["body"] = json.loads(request.data.decode())
+        captured["headers"] = {k.lower(): v for k, v in request.header_items()}
+        return FakeResponse()
+
+    wp.urllib.request.urlopen = fake_urlopen
+    try:
+        found, reason = wp.fetch_official_connection(timeout=3.0)
+    finally:
+        wp.urllib.request.urlopen = original
+
+    assert found == (wp.DEFAULT_KEY, "us2"), (found, reason)
+    assert captured["url"] == "https://web.kick.com/api/v1/realtime/connection"
+    assert captured["body"]["capabilities"]["accepted_providers"] == [{"provider": "pusher"}]
+    assert captured["body"]["client"]["type"] == "web"
+    assert "application/json" in captured["headers"].get("content-type", "")
+
+
+def test_kick_chat_discovery_matches_probe() -> None:
+    """kick_chat.fetch_official_connection ต้องอ่านคำตอบแบบเดียวกับ ws_probe"""
+    payload = {"data": {"connections": [
+        {"provider": "pusher", "credentials": {"app_key": "abc123456789", "cluster": "eu"}}]}}
+
+    class FakeResponse:
+        def read(self) -> bytes:
+            return json.dumps(payload).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    original = kc.urllib.request.urlopen
+    kc.urllib.request.urlopen = lambda *_a, **_kw: FakeResponse()
+    try:
+        found, reason = kc.fetch_official_connection(timeout=1.0)
+    finally:
+        kc.urllib.request.urlopen = original
+    assert found == ("abc123456789", "eu"), (found, reason)
+
+
+def test_sweep_classifies_current_and_retired_keys() -> None:
+    """pusher_sweep ต้องบอกได้ว่าคู่ไหนใช้ได้ และ echo key ที่ Pusher เห็น"""
+    import importlib.util
+
+    sweep_path = Path(__file__).resolve().parent.parent / "tools" / "pusher_sweep.py"
+    spec = importlib.util.spec_from_file_location("pusher_sweep", sweep_path)
+    assert spec and spec.loader
+    sweep = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sweep)
+
+    server = MockPusherServer()
+    server.start()
+    try:
+        rows = [
+            sweep.test_pair("127.0.0.1", "us2", GOOD_KEY, 3.0, "ws", server.port),
+            sweep.test_pair("127.0.0.1", "us2", BAD_KEY, 3.0, "ws", server.port),
+        ]
+        verdicts = [row["verdict"] for row in rows]
+        assert verdicts[0] == "ok", rows[0]
+        assert verdicts[1] == "wrong", rows[1]
+        assert rows[1]["key_seen"] == BAD_KEY, rows[1]
+
+        summary = sweep.summarize(rows)
+        assert summary["best"]["verdict"] == "ok"
+        assert summary["keys_pusher_saw"] == [BAD_KEY]
+        table = sweep.render_table(rows)
+        assert "✅ ต่อได้" in table and "❌ ผิด cluster/key" in table
+        assert GOOD_KEY in table
+        # JSON ที่บันทึกต้องอ่านกลับได้
+        payload = json.loads(json.dumps({"rows": rows, "winners": [w["url"] for w in summary["winners"]]}))
+        assert payload["rows"][1]["verdict"] == "wrong"
+    finally:
+        server.stop()
+
+
+def test_sweep_url_builder() -> None:
+    import importlib.util
+
+    sweep_path = Path(__file__).resolve().parent.parent / "tools" / "pusher_sweep.py"
+    spec = importlib.util.spec_from_file_location("pusher_sweep_url", sweep_path)
+    sweep = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    spec.loader.exec_module(sweep)
+
+    url = sweep.build_url("ws-us2.pusher.com", wp.DEFAULT_KEY)
+    assert url.startswith(f"wss://ws-us2.pusher.com/app/{wp.DEFAULT_KEY}?")
+    assert "protocol=7" in url and "flash=false" in url
+    assert sweep.build_url("127.0.0.1", "k", "ws", 1234) == "ws://127.0.0.1:1234/app/k?protocol=7&client=js&version=8.4.0&flash=false"
+
 
 
 if __name__ == "__main__":

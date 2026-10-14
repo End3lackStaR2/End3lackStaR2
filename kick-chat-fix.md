@@ -1,6 +1,43 @@
-# แก้ error `App key 32cbd69e4b950bf97679 not in this cluster`
+# แก้ error `App key … not in this cluster` — สาเหตุยืนยันแล้ว: Kick ปิด Pusher app ตัวเก่า (ต.ค. 2026)
 
 อัปเดต: 2026-10-14 · ใช้กับ `ws_probe.py`, `kick_chat.py`, `kick_events.py` ในรีโปนี้
+
+---
+
+## ✅ สรุปสาเหตุ (ยืนยันจากต้นทางแล้ว 14 ต.ค. 2026)
+
+**Kick ปิด Pusher app ตัวเก่า `32cbd69e4b950bf97679` ไปเมื่อต้นเดือน ต.ค. 2026**
+ทุกการเชื่อมต่อที่ใช้ key นี้จะได้ `4001 App key ... not in this cluster` **แม้ host/cluster/เน็ตจะถูกต้องทั้งหมด**
+key ที่ Kick ใช้อยู่จริงตอนนี้คือ **`34bf7a0ff419a2a775b9`** (cluster `us2` เดิม)
+
+หลักฐาน (ตรวจจาก GitHub เมื่อ 14 ต.ค. 2026):
+
+| แหล่ง | สิ่งที่พบ |
+| --- | --- |
+| `segelferd/kick-alert` CHANGELOG v2.5.78 (13 ต.ค. 2026) | *"Kick shut down the Pusher app KickAlert connected to (`32cbd69e4b950bf97679`). Every connection was rejected with `4001 App key not in this cluster`"* |
+| โปรเจกต์ที่อัปเดตล่าสุด (13 ต.ค. 2026): `steveseguin/social_stream`, `Casterlabs/Platform-SDKs`, `ilanzgx/multistream` | ใช้ `34bf7a0ff419a2a775b9` + cluster `us2` — **ไม่มีตัวไหนใช้ key เก่าแล้ว** |
+| `eerimoq/moblin`, `Bukk94/KickLib`, `NOALBS/…` (8 ต.ค. 2026) | ใช้ `34bf7a0ff419a2a775b9` ทั้งหมด |
+| commit เมื่อ 13 ต.ค. 2026 ใน `senchabot-opensource/monorepo`, `taxeryg/31zcc` | ข้อความ commit: *"update Kick Pusher app key to 34bf7a0ff419a2a775b9"* |
+
+**และ Kick มี endpoint ให้ถามได้เสมอว่า "ตอนนี้ต้องใช้ app ไหน"** (เว็บของ Kick เองก็ถามตัวนี้ทุกครั้งที่เปิด):
+
+```
+POST https://web.kick.com/api/v1/realtime/connection
+body: {"client":{"id":"<สุ่ม uuid>","type":"web"},
+       "capabilities":{"accepted_providers":[{"provider":"pusher"}]}}
+ตอบ:  {"data":{"connections":[{"provider":"pusher",
+        "credentials":{"app_key":"34bf7a0ff419a2a775b9","cluster":"us2"}}]}}
+```
+
+👉 **แก้ทันทีด้วย 2 คำสั่งนี้** (เครื่องมือในรีโปนี้ถามให้เองแล้ว ไม่ต้องคัดลอก key ด้วยมือ):
+
+```cmd
+cd /d D:\HermesAI\OBS\files
+"...\python.exe" kick_chat.py fix-config --config-file config.json --apply
+"...\python.exe" ws_probe.py --discover
+```
+
+> ถ้าเครื่องไหนเข้า `web.kick.com` ไม่ได้ (Cloudflare) เครื่องมือจะถอยไปใช้ค่าที่ฝังไว้ `34bf7a0ff419a2a775b9` ให้เอง
 
 ---
 
@@ -18,10 +55,13 @@ foreach ($f in "ws_probe.py","kick_chat.py","kick_oauth.py","kick_events.py","ki
   Invoke-WebRequest "$base/$f" -OutFile (Join-Path $dst $f)
   Write-Host "โหลดแล้ว: $f"
 }
+New-Item -ItemType Directory -Force -Path "$dst\tools" | Out-Null
 foreach ($f in "run_all.py","test_kick_probe_html.js","test_overlay_html.js") {
   Invoke-WebRequest "$base/tests/$f" -OutFile (Join-Path $dst "tests\$f")
   Write-Host "โหลดแล้ว: tests/$f"
 }
+Invoke-WebRequest "$base/tools/pusher_sweep.py" -OutFile "$dst\tools\pusher_sweep.py"
+Write-Host "โหลดแล้ว: tools/pusher_sweep.py"
 ```
 
 **วิธี B: curl (มีมาใน Windows 10/11 อยู่แล้ว)**
@@ -30,8 +70,10 @@ cd /d "D:\HermesAI\OBS\files"
 curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/ws_probe.py
 curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/kick_chat.py
 curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/kick_probe.html
-mkdir tests
+curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/kick_events.py
+mkdir tests tools
 curl -O --output-dir tests https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/tests/run_all.py
+curl -O --output-dir tools https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/tools/pusher_sweep.py
 ```
 
 **วิธี C: เปิดในเบราว์เซอร์แล้ว Ctrl+S**
@@ -50,7 +92,8 @@ curl -O --output-dir tests https://raw.githubusercontent.com/End3lackStaR2/End3l
 | `ws_probe.py` | ไฟล์เดียวจบ บอกได้ทันทีว่าปัญหาอยู่ที่ "เส้นทาง" หรือ "key/โค้ด" |
 | `kick_chat.py` | วินิจฉัย/ซ่อม config ที่ซับซ้อน (`report`, `fix-config`, `scan`, `extract`) + ฟัง/ส่งแชท |
 | `kick_oauth.py` | รับ/รีเฟรช token (ใช้เฉพาะตอน *ส่ง* ข้อความ) |
-| `kick_events.py` | ทางเลือกทางการด้วย webhook แทน Pusher (ดูข้อ 9) |
+| `kick_events.py` | ทางเลือกทางการด้วย webhook แทน Pusher — ไม่ต้องพึ่ง key นี้เลย (ดูข้อ 6) |
+| `tools/pusher_sweep.py` | ยิงทดสอบ **ทุก cluster × ทุก key** พร้อมกันแล้วสรุปเป็นตารางเดียว (มี `--discover` ให้ถาม Kick ก่อน) |
 
 ---
 
@@ -58,17 +101,17 @@ curl -O --output-dir tests https://raw.githubusercontent.com/End3lackStaR2/End3l
 
 | คำถาม | คำตอบ |
 | --- | --- |
-| error นี้แปลว่าอะไร | **ต่อผิด cluster** — Pusher รู้จัก key นี้ แต่ key นี้ไม่ได้ถูกสร้างใน cluster ที่คุณกำลังต่อ |
-| Kick ใช้ cluster ไหน | **`us2`** → `wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0-rc2&flash=false` |
+| error นี้แปลว่าอะไร | ในเคสของคุณ = **Kick ปิด Pusher app ตัวเก่าไปแล้ว** (4001) ไม่ใช่ปัญหาที่เครื่องคุณ |
+| Kick ใช้ cluster ไหน + key ไหน | **`us2`** + **`34bf7a0ff419a2a775b9`** → `wss://ws-us2.pusher.com/app/34bf7a0ff419a2a775b9?protocol=7&client=js&version=8.4.0&flash=false` |
 | ลอง `ws-eu` / `ws-ap1` / `ws-us-east-1` ดีไหม | **แย่ลง** — สามตัวนี้ไม่ใช่ cluster ของ Kick จึงได้ error เดียวกันแน่นอน (`ws-us-east-1` ยังไม่ใช่ชื่อ cluster ของ Pusher ด้วยซ้ำ) |
 | App key มาจาก Kick Developer Portal ไหม | **ไม่** — portal ให้แค่ OAuth `client_id` / `client_secret` ส่วน key นี้เป็น Pusher key สาธารณะที่ฝังอยู่ในหน้าเว็บ Kick (ใครก็เห็นได้ ไม่ใช่ความลับ) |
-| ต้องแก้ตรงไหน | host/cluster ใน `config.json` ให้เป็น `us2` เท่านั้น (2 บรรทัด) แล้วรัน `kick_chat.py probe` เพื่อยืนยัน |
-| ถ้า host เป็น `us2` แล้วยัง error | ดูข้อ **3.5** — hosts file / proxy / DNS ถูกดัก / key ถูกหมุน / process เก่ายังไม่รีสตาร์ท (ใช้ `fix-config` + `scan`) |
-| ถ้าอนาคต Kick เปลี่ยน key | รัน `python kick_chat.py probe` — สคริปต์จะไล่ทดสอบทุก cluster ให้เอง (หรือวาง URL จาก DevTools ผ่าน `discover --ws-url`) |
+| ต้องแก้ตรงไหน | เปลี่ยน **key** ใน `config.json` จาก `32cbd…` เป็น `34bf7a0ff419a2a775b9` (host ยังเป็น `ws-us2.pusher.com` เหมือนเดิม) — หรือใช้ `kick_chat.py fix-config --config-file config.json --apply` |
+| ถ้าเปลี่ยน key แล้วยัง error | ดูข้อ **3.5** — hosts file / proxy / process เก่ายังรันอยู่ / ค่าถูก override จาก env |
+| ถ้าอนาคต Kick หมุน key อีก | รัน `python ws_probe.py --discover` หรือ `python kick_chat.py discover` — จะถาม Kick ให้เอง (หรือ `python tools\\pusher_sweep.py` เพื่อดูทุกคู่พร้อมกัน) |
 | เห็น error ทั้งที่ process ไม่ทำงาน | เกือบแน่นอนว่าเป็น **log เก่า** — ดูข้อ 0.1 (ตรวจเวลาไฟล์ log) |
 | อยากได้คำตอบใน 5 วินาที | รัน `python ws_probe.py` — บอกได้ทันทีว่าปัญหาอยู่ที่เส้นทางหรือที่ key (ดูข้อ 0.2) |
 
-> **สรุปสาเหตุ:** ไม่ใช่ "token/credentials ผิด" และไม่ใช่ "app key ผิด" — เป็นเพราะปลายทาง WebSocket ที่ต่ออยู่ไม่ใช่ `ws-us2.pusher.com` ครับ
+> **สรุป:** host/cluster ของคุณถูกอยู่แล้ว (`ws-us2.pusher.com`) สิ่งที่ตกยุคคือ **key** เพราะ Kick ปิด app ตัวเก่า — ไม่เกี่ยวกับ token, ไม่เกี่ยวกับ Developer Portal และไม่ใช่ปัญหาที่เน็ต/เครื่องคุณ
 
 ---
 
@@ -84,8 +127,9 @@ Pusher : error : {"code":4001,"message":"App key <KEY-ที่-Pusher-เห็
 
 | KEY ที่ Pusher เห็น | แปลว่า | แก้ตรงไหน |
 | --- | --- | --- |
-| `32cbd69e4b950bf97679` (key สาธารณะ) | key ถูก — ปัญหาอยู่ที่ host/เส้นทาง/process เก่า | ดูข้อ 3.5 |
-| อะไรก็ตามที่ไม่ใช่ key ข้างบน | **มีคนเอาค่าผิดใส่ช่อง `appKey`** (พบบ่อยสุด: เอา OAuth **client_id** จาก Kick Developer Portal มาใส่) | ใส่ `32cbd69e4b950bf97679` แทน — **client_id/client_secret ไม่เกี่ยวอะไรกับ Pusher เลย** |
+| `32cbd69e4b950bf97679` (**key เก่าที่ Kick ปิดแล้ว**) | เจอครบ 100% ของเคสนี้ — kick ปิด app นี้ไปเมื่อ ต.ค. 2026 | เปลี่ยนเป็น `34bf7a0ff419a2a775b9` (ข้อ 0.0 ด้านบนมีคำสั่งให้อยู่แล้ว) |
+| `34bf7a0ff419a2a775b9` (key ปัจจุบัน) แล้วยัง error | ไม่ควรเกิด — ให้ตรวจว่า process ที่รันอยู่ใช้ค่าจากไฟล์ไหนจริง ๆ | ดูข้อ 3.5 + `kick_chat.py report` |
+| อะไรก็ตามที่ไม่ใช่ key ข้างบน | **มีคนเอาค่าผิดใส่ช่อง `appKey`** (พบบ่อยสุด: เอา OAuth **client_id** จาก Kick Developer Portal มาใส่) | ใส่ `34bf7a0ff419a2a775b9` แทน — **client_id/client_secret ไม่เกี่ยวอะไรกับ Pusher เลย** |
 | key ยาว 40+ ตัว / มีอักขระแปลก | คัดลอกมาครบไม่ถึง หรือมีช่องว่าง/อักขระซ่อน | ใช้ `extract` ให้แกะใหม่ |
 
 **กับดัก 2 ข้อที่ทำให้ "แก้แล้วยังไม่หาย":**
@@ -204,6 +248,38 @@ us3      32cbd69e4b…  ต่อไม่ได้          หมดเวล�
 เมื่อเจอคู่ที่ใช้ได้ หน้าเว็บจะมีปุ่มให้: **คัดลอก URL** · **คัดลอกคำสั่ง Python ยืนยันซ้ำ** · **คัดลอก JSON สำหรับ config.json**
 
 ---
+
+---
+
+## 0.4) `tools/pusher_sweep.py` — ทดสอบทุก cluster × ทุก key ในคำสั่งเดียว
+
+ถ้าไม่อยากคลิกในเบราว์เซอร์ หรืออยากได้ไฟล์ผลลัพธ์ไว้ดูย้อนหลัง:
+
+```cmd
+cd /d D:\HermesAI\OBS\files
+"...\python.exe" tools\pusher_sweep.py --discover --json sweep_result.json
+```
+
+จะได้ตารางแบบนี้ (ตัวอย่างจากเครื่องที่ทดสอบสำเร็จ):
+
+```
+cluster  key                   ผลลัพธ์
+us2      34bf7a0ff419a2a775b9  ✅ ต่อได้           socket_id=123.456
+us2      32cbd69e4b950bf97679  ❌ ผิด cluster/key  Pusher เห็น key 32cbd69e4b950bf97679
+
+>>> ✅ เจอคู่ที่ใช้ได้ — ใช้ค่านี้:
+    wss://ws-us2.pusher.com/app/34bf7a0ff419a2a775b9?protocol=7&client=js&version=8.4.0&flash=false
+```
+
+| ตัวเลือก | ใช้ทำอะไร |
+| --- | --- |
+| `--discover` | ถาม `web.kick.com` ก่อนว่าจะให้ใช้ app ไหน แล้วทดสอบ key นั้นด้วย |
+| `--keys a,b` / `--clusters us2,eu` | ระบุเองว่าจะทดสอบอะไร |
+| `--json ไฟล์.json` | เก็บผลละเอียดทุกคู่ (ส่งกลับมาให้ดูได้ทั้งไฟล์) |
+| `--check-kick` | ตรวจด้วยว่าเน็ตนี้เข้า `kick.com` / `api.kick.com` ได้ไหม |
+| `--timeout 5` | หมดเวลาต่อคู่ (วินาที) |
+
+รหัสออก: `0` = เจอคู่ที่ใช้ได้ · `3` = ไม่มีคู่ไหนใช้ได้เลย
 
 **กรณีที่พบอักขระซ่อน** ผลจะออกแบบนี้ — แก้ด้วยการพิมพ์ key ใหม่ (อย่าคัดลอกจากแชท/หน้าเว็บ):
 

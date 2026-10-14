@@ -17,7 +17,7 @@
   python kick_chat.py listen --chatroom 123456 --json
   python kick_chat.py send --channel yourslug --message "สวัสดีครับ"
 
-ข้อมูลอ้างอิง: Kick ใช้ Pusher app key สาธารณะ 32cbd69e4b950bf97679 บน cluster us2
+ข้อมูลอ้างอิง: ต.ค. 2026 Kick ปิด Pusher app เก่า (32cbd69e4b950bf97679) แล้ว ใช้ key ใหม่ 34bf7a0ff419a2a775b9 บน cluster us2
 (ค่า key ไม่ได้มาจาก Kick Developer Portal — portal ให้แค่ OAuth client id/secret)
 """
 
@@ -38,14 +38,20 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # ค่าคงที่
 # ---------------------------------------------------------------------------
-DEFAULT_APP_KEY = "32cbd69e4b950bf97679"          # key สาธารณะที่ Kick ใช้บนเว็บ
-FALLBACK_APP_KEYS = ("34bf7a0ff419a2a775b9",)     # key เก่าที่บางโปรเจกต์ใช้สำรอง
+# key ที่ Kick ใช้อยู่จริงตอนนี้ (ต.ค. 2026) — ค่าที่ Kick คืนจาก web.kick.com/api/v1/realtime/connection
+DEFAULT_APP_KEY = "34bf7a0ff419a2a775b9"
+# key เก่าที่ Kick ปิดไปแล้ว → ใช้แล้วได้ error 4001 "App key not in this cluster" เสมอ
+RETIRED_APP_KEYS = ("32cbd69e4b950bf97679",)
+FALLBACK_APP_KEYS = RETIRED_APP_KEYS                # ชื่อเดิม ยังใช้ที่อื่นในไฟล์
 DEFAULT_CLUSTER = "us2"
+# endpoint ที่ Kick ใช้บอกว่า "ตอนนี้ให้เชื่อมต่อ Pusher app ไหน"
+REALTIME_CONNECTION_URL = "https://web.kick.com/api/v1/realtime/connection"
 
 # ชื่อ cluster ของ Pusher -> host ของ WebSocket
 CLUSTER_HOSTS = {
@@ -652,6 +658,47 @@ def http_get(url: str, headers: dict | None = None, timeout: float = 15.0) -> tu
         raise ConnectionError(str(exc.reason)) from exc
 
 
+def fetch_official_connection(timeout: float = 10.0) -> tuple[tuple[str, str] | None, str]:
+    """ถาม Kick ว่าให้ใช้ Pusher app ไหน — คืน ((key, cluster) หรือ None, เหตุผล)
+
+    Kick ใช้ endpoint นี้ในเว็บของตัวเอง (web client ส่ง body แบบเดียวกัน ไม่ใช้คุกกี้)
+    คำตอบ: {"data": {"connections": [{"provider": "pusher",
+             "credentials": {"app_key": "...", "cluster": "us2"}}]}}
+    """
+    body = json.dumps({
+        "client": {"id": str(uuid.uuid4()), "type": "web"},
+        "capabilities": {"accepted_providers": [{"provider": "pusher"}]},
+    }).encode()
+    request = urllib.request.Request(
+        REALTIME_CONNECTION_URL,
+        data=body,
+        headers={
+            "content-type": "application/json",
+            "accept": "application/json",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) kick_chat.py",
+            "origin": "https://kick.com",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8", "replace"))
+    except urllib.error.HTTPError as exc:
+        return None, f"Kick ตอบ HTTP {exc.code}"
+    except Exception as exc:  # noqa: BLE001
+        return None, f"ติดต่อ web.kick.com ไม่ได้: {type(exc).__name__}: {exc}"
+    connections = (payload.get("data") or {}).get("connections") if isinstance(payload, dict) else None
+    for item in connections or []:
+        if not isinstance(item, dict) or str(item.get("provider", "")).lower() != "pusher":
+            continue
+        creds = item.get("credentials") or {}
+        key = str(creds.get("app_key") or "").strip()
+        cluster = str(creds.get("cluster") or DEFAULT_CLUSTER).strip() or DEFAULT_CLUSTER
+        if key:
+            return (key, cluster), "ok"
+    return None, "คำตอบไม่มีข้อมูล pusher/credentials"
+
+
 def discover_from_web(slug: str | None, max_scripts: int = 6, timeout: float = 15.0) -> tuple[str, str, str]:
     """พยายามหาที่มาของ wss URL จากหน้าเว็บ Kick คืน (cluster, app_key, แหล่งที่มา)"""
     pages = [f"https://kick.com/{slug}"] if slug else []
@@ -683,6 +730,26 @@ def discover_from_web(slug: str | None, max_scripts: int = 6, timeout: float = 1
 
 def cmd_discover(args) -> int:
     cfg = load_config(config_path(getattr(args, "config", None)))
+    if not args.ws_url and not getattr(args, "no_official", False):
+        print("=== 1) ถาม Kick ตรง ๆ (web.kick.com/api/v1/realtime/connection) ===")
+        found, reason = fetch_official_connection(args.timeout)
+        if found:
+            key, cluster = found
+            print(f"[OK]  Kick บอกให้ใช้: cluster={cluster} key={mask(key, 12)}")
+            status, detail = probe_once(build_ws_url(cluster, key), args.timeout)
+            print(f"      ทดสอบเชื่อมต่อ: {status} - {detail}")
+            if status == "ok":
+                save_config(config_path(args.config), {
+                    "cluster": cluster,
+                    "app_key": key,
+                    "ws_url": build_ws_url(cluster, key),
+                })
+                print(f"[OK]  บันทึกใน {config_path(args.config)}")
+                return 0
+            warn("ค่าที่ Kick ให้มาเชื่อมต่อไม่สำเร็จ — จะลองวิธีอื่นต่อ")
+        else:
+            warn(f"ถามไม่ได้: {reason}")
+        print()
     if args.ws_url:
         cluster, key, host = parse_ws_url(args.ws_url)
         if not key:
@@ -1317,12 +1384,24 @@ def cmd_fix_config(args) -> int:
         live_key, live_cluster = key, cluster or DEFAULT_CLUSTER
         ok(f"ใช้ค่าที่คุณวางมา: cluster={live_cluster} key={mask(live_key, 12)}")
     else:
-        cluster, key, source = discover_from_web(args.channel)
-        if key:
-            live_key, live_cluster = key, cluster or DEFAULT_CLUSTER
-            ok(f"เจอจาก {source}: cluster={live_cluster} key={mask(live_key, 12)}")
+        # 2.1) ถามทางการก่อน — endpoint ที่เว็บ Kick ใช้เอง (ไม่ติด Cloudflare เท่าการอ่านหน้าเว็บ)
+        official, reason = fetch_official_connection(args.timeout)
+        if official:
+            live_key, live_cluster = official
+            ok(f"Kick บอกเอง (web.kick.com): cluster={live_cluster} key={mask(live_key, 12)}")
         else:
-            warn("ดึงจากเว็บไม่เจอ (Cloudflare) — ใช้ snippet ในเบราว์เซอร์แล้วส่งมาทาง --ws-url")
+            warn(f"ถาม Kick ตรง ๆ ไม่ได้: {reason}")
+        # 2.2) ถามไม่ได้ ค่อยไล่จากหน้าเว็บ
+        if not live_key:
+            cluster, key, source = discover_from_web(args.channel)
+            if key:
+                live_key, live_cluster = key, cluster or DEFAULT_CLUSTER
+                ok(f"เจอจาก {source}: cluster={live_cluster} key={mask(live_key, 12)}")
+            else:
+                warn("ดึงจากเว็บไม่เจอ (Cloudflare) — ใช้ snippet ในเบราว์เซอร์แล้วส่งมาทาง --ws-url")
+
+    if configured_key.lower() in RETIRED_APP_KEYS:
+        warn(f"key ในไฟล์คือ key ที่ Kick ปิดไปแล้ว ({configured_key}) — ต้องเปลี่ยนเป็น {DEFAULT_APP_KEY}")
 
     # 3) ยิง handshake จริง
     print()
@@ -1470,7 +1549,7 @@ def cmd_scan(args) -> int:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        if "pusher" not in text.lower() and "32cbd69e4b950bf97679" not in text:
+        if "pusher" not in text.lower() and not any(k in text.lower() for k in (DEFAULT_APP_KEY, *RETIRED_APP_KEYS)):
             continue
         for lineno, line in enumerate(text.splitlines(), 1):
             for kind, found in scan_text_for_pusher(line):
@@ -1505,7 +1584,7 @@ def cmd_scan(args) -> int:
     print(f"      สแกน {files} ไฟล์ พบ {len(findings)} จุด" + (f" (น่าสงสัย {bad})" if bad else " (ดูปกติ)"))
     if bad:
         print()
-        info("แก้ค่าที่ไม่ใช่ us2/" + DEFAULT_APP_KEY + " ให้เป็นค่าล่าสุด")
+        info("แก้ค่าที่ถูกปิดแล้วให้เป็นค่าล่าสุด: us2/" + DEFAULT_APP_KEY)
         info("หรือใช้:  python kick_chat.py fix-config --config-file \"<ไฟล์ที่มีค่าเก่า>\" --apply")
     return 0
 

@@ -25,7 +25,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import kick_chat as kc  # noqa: E402
 
-GOOD_KEY = "32cbd69e4b950bf97679"
+GOOD_KEY = "34bf7a0ff419a2a775b9"        # key ปัจจุบันของ Kick (ต.ค. 2026)
+RETIRED_KEY = "32cbd69e4b950bf97679"    # key เก่าที่ Kick ปิดแล้ว — ใช้ทดสอบเส้นทาง "ค่าตกยุค"
 BAD_KEY = "ffffffffffffffffffff"
 
 
@@ -246,7 +247,7 @@ def test_build_and_parse_url() -> None:
     assert "protocol=7" in url and "flash=false" in url
 
     cluster, key, host = kc.parse_ws_url(
-        "wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0-rc2&flash=false"
+        f"wss://ws-us2.pusher.com/app/{GOOD_KEY}?protocol=7&client=js&version=8.4.0-rc2&flash=false"
     )
     assert cluster == "us2"
     assert key == GOOD_KEY
@@ -257,11 +258,11 @@ def test_build_and_parse_url() -> None:
 
 
 def test_extract_pusher_from_text() -> None:
-    html = '<script>window.pusher = "wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7";</script>'
+    html = f'<script>window.pusher = "wss://ws-us2.pusher.com/app/{GOOD_KEY}?protocol=7";</script>'
     found = kc.extract_pusher_from_text(html)
     assert found == ("us2", GOOD_KEY)
 
-    js = 'const opts={key:"32cbd69e4b950bf97679",cluster:"us2"}'
+    js = f'const opts={{key:"{GOOD_KEY}",cluster:"us2"}}'
     found2 = kc.extract_pusher_from_text(js)
     assert found2 and found2[1] == GOOD_KEY
     assert kc.extract_pusher_from_text("no pusher here") is None
