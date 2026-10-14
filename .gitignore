@@ -7,6 +7,7 @@ kick_credentials.env
 credentials.json
 kick_tokens.json
 kick_chat_config.json
+kick_events_config.json
 chat.ndjson
 *.log
 *tokens*.json

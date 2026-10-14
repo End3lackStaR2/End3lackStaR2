@@ -29,6 +29,7 @@ import hmac
 import http.server
 import json
 import os
+import queue
 import re
 import sys
 import threading
@@ -380,6 +381,163 @@ def normalize_chat(payload: dict, event_type: str = "chat.message.sent") -> dict
 # ---------------------------------------------------------------------------
 # webhook receiver
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# ไฟล์ config (kick_events_config.json) — ให้ตั้งครั้งเดียวแล้วใช้ทุกคำสั่ง
+# ---------------------------------------------------------------------------
+CONFIG_NAME = "kick_events_config.json"
+
+CONFIG_TEMPLATE = {
+    "broadcaster_user_id": 0,
+    "webhook_url": "",
+    "events": ["chat.message.sent"],
+    "port": 8081,
+    "path": "/kick",
+    "verify_signature": True,
+    "overlay": True,
+    "write": "chat.ndjson",
+}
+
+
+def config_path(explicit: str | None) -> Path:
+    if explicit:
+        return Path(explicit).expanduser()
+    local = SCRIPT_DIR / CONFIG_NAME
+    if local.is_file():
+        return local
+    cwd_file = Path.cwd() / CONFIG_NAME
+    return cwd_file if cwd_file.is_file() else local
+
+
+def load_config(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        log(f"อ่าน config ไม่ได้ ({path}): {exc}")
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def save_config(path: Path, data: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    merged = load_config(path)
+    merged.update({k: v for k, v in data.items() if v not in (None, "")})
+    path.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def pick(cli_value, cfg: dict, key: str, default=None):
+    """ใช้ค่าจาก CLI ถ้ามี ไม่งั้นใช้จากไฟล์ config ไม่งั้นใช้ค่าเริ่มต้น"""
+    if cli_value not in (None, "", []):
+        return cli_value
+    value = cfg.get(key)
+    if value not in (None, ""):
+        return value
+    return default
+
+
+# ---------------------------------------------------------------------------
+# Hub สำหรับส่ง event ต่อให้หน้า overlay (ผ่าน Server-Sent Events)
+# ---------------------------------------------------------------------------
+class Hub:
+    def __init__(self) -> None:
+        self._clients: list[queue.Queue] = []
+        self._lock = threading.Lock()
+
+    def subscribe(self) -> queue.Queue:
+        q: queue.Queue = queue.Queue(maxsize=200)
+        with self._lock:
+            self._clients.append(q)
+        return q
+
+    def unsubscribe(self, q: queue.Queue) -> None:
+        with self._lock:
+            if q in self._clients:
+                self._clients.remove(q)
+
+    def publish(self, item: dict) -> None:
+        with self._lock:
+            targets = list(self._clients)
+        for q in targets:
+            try:
+                q.put_nowait(item)
+            except queue.Full:
+                pass
+
+    @property
+    def count(self) -> int:
+        with self._lock:
+            return len(self._clients)
+
+
+OVERLAY_HTML = """<!doctype html>
+<html lang="th"><head><meta charset="utf-8"><title>Kick Chat Overlay</title>
+<style>
+  html,body{margin:0;padding:0;background:transparent;overflow:hidden;
+    font-family:'Segoe UI',Tahoma,sans-serif}
+  #box{position:fixed;left:18px;bottom:18px;width:400px;display:flex;flex-direction:column;gap:7px}
+  .msg{background:rgba(10,12,16,.62);color:#fff;padding:9px 12px;border-radius:11px;font-size:19px;
+    line-height:1.35;box-shadow:0 2px 10px rgba(0,0,0,.35);opacity:0;transform:translateY(10px);
+    animation:in .22s ease-out forwards;word-break:break-word}
+  .msg .who{font-weight:700;margin-right:6px}
+  .msg .badge{font-size:12px;background:#53fc18;color:#06210a;border-radius:5px;
+    padding:1px 5px;margin-right:7px;font-weight:700;vertical-align:2px}
+  .msg .emote{height:22px;vertical-align:-5px}
+  .fade{animation:out .45s ease-in forwards}
+  @keyframes in{to{opacity:1;transform:none}}
+  @keyframes out{to{opacity:0;transform:translateY(-6px)}}
+  #stat{position:fixed;right:12px;top:10px;color:#9aa4b2;font:12px Consolas,monospace;
+    background:rgba(0,0,0,.4);padding:3px 8px;border-radius:6px}
+</style></head>
+<body>
+<div id="box"></div><div id="stat">connecting…</div>
+<script>
+(function(){
+  var box=document.getElementById('box'), stat=document.getElementById('stat');
+  var MAX=12, LIFETIME=60000, base=location.pathname.replace(/\/[^/]*$/,'');
+  function badgeEl(b){var s=document.createElement('span');s.className='badge';s.textContent=b;return s;}
+  function renderEmotes(text){
+    // Kick ส่งอีโมตมาเป็น [emote:ID:NAME] — แสดงเป็น <img> ของ Kick
+    var parts=String(text||'').split(/(\[emote:\d+:[^\]]+\])/g);
+    var frag=document.createDocumentFragment();
+    parts.forEach(function(p){
+      var m=p.match(/^\[emote:(\d+):([^\]]+)\]$/);
+      if(m){var img=document.createElement('img');img.className='emote';
+        img.src='https://files.kick.com/emotes/'+m[1]+'/fullsize';img.alt=m[2];img.title=m[2];
+        img.onerror=function(){var s=document.createElement('span');s.textContent=m[2];img.replaceWith(s);};
+        frag.appendChild(img);}
+      else if(p){frag.appendChild(document.createTextNode(p));}
+    });
+    return frag;
+  }
+  function add(m){
+    var d=document.createElement('div'); d.className='msg';
+    (m.badges||[]).slice(0,2).forEach(function(b){d.appendChild(badgeEl(b));});
+    var who=document.createElement('span'); who.className='who';
+    who.textContent=(m.username||'?')+':'; who.style.color=m.color||'#ffd166';
+    d.appendChild(who); d.appendChild(renderEmotes(m.content));
+    box.appendChild(d);
+    while(box.childElementCount>MAX){box.removeChild(box.firstChild);}
+    setTimeout(function(){d.classList.add('fade');setTimeout(function(){d.remove();},480);},LIFETIME);
+  }
+  function connect(){
+    var es=new EventSource(base+'/events');
+    es.onopen=function(){stat.textContent='live';};
+    es.onmessage=function(e){
+      try{var m=JSON.parse(e.data);
+        if(m.kind==='chat'){add(m);}
+        else if(m.kind==='stat'){stat.textContent='live · '+m.text;}
+      }catch(err){}
+    };
+    es.onerror=function(){stat.textContent='reconnecting…';es.close();setTimeout(connect,1500);};
+  }
+  connect();
+  // พิมพ์ใน Console ของ OBS/เบราว์เซอร์เพื่อทดสอบภาพ overlay
+  window.kickTest=function(user,text){add({username:user||'tester',content:text||'ทดสอบ overlay',badges:['moderator'],color:'#53fc18'});};
+})();
+</script></body></html>"""
+
+
 class WebhookHandler(http.server.BaseHTTPRequestHandler):
     server_version = "KickEvents/1.0"
 
@@ -442,6 +600,14 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
                 with cfg["write_lock"]:
                     with open(cfg["write"], "a", encoding="utf-8") as handle:
                         handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            hub = cfg.get("hub")
+            if hub is not None and (event_type == "chat.message.sent" or cfg["all_events"]):
+                item = normalize_chat(payload, event_type) if event_type == "chat.message.sent" else {
+                    "kind": "chat", "username": event_type, "content": summarize_event(event_type, payload),
+                }
+                item = dict(item)
+                item["kind"] = "chat"
+                hub.publish(item)
             if cfg["forward"]:
                 threading.Thread(target=cfg["forward"], args=(body, self.headers, event_type), daemon=True).start()
             if cfg["limit"] and cfg["count"] >= cfg["limit"]:
@@ -459,20 +625,71 @@ class WebhookHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(response)
 
-    def do_GET(self):  # noqa: N802
-        # เปิดหน้าเว็บไว้ให้ health-check / tunnel ตรวจว่า endpoint มีชีวิต
-        cfg = self.server.cfg  # type: ignore[attr-defined]
-        body = json.dumps({
-            "service": "kick_events receiver",
-            "path": cfg["path"],
-            "received": cfg["count"],
-            "verify": cfg["verify"],
-        }, ensure_ascii=False, indent=2).encode()
-        self.send_response(200)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
+    def _send_bytes(self, status: int, content_type: str, body: bytes) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.end_headers()
         self.wfile.write(body)
+
+    def do_GET(self):  # noqa: N802
+        cfg = self.server.cfg  # type: ignore[attr-defined]
+        path = urllib.parse.urlparse(self.path).path.rstrip("/") or "/"
+
+        if cfg["overlay"] and path in ("/overlay", "/overlay.html"):
+            self._send_bytes(200, "text/html; charset=utf-8", OVERLAY_HTML.encode("utf-8"))
+            return
+
+        if cfg["overlay"] and path == "/events":
+            self._serve_sse(cfg)
+            return
+
+        if path in ("/", "/status"):
+            body = json.dumps({
+                "service": "kick_events receiver",
+                "webhook_path": cfg["path"],
+                "received": cfg["count"],
+                "verify_signature": cfg["verify"],
+                "overlay": bool(cfg["overlay"]),
+                "overlay_url": "/overlay" if cfg["overlay"] else None,
+                "sse_url": "/events" if cfg["overlay"] else None,
+                "sse_clients": cfg["hub"].count if cfg.get("hub") else 0,
+            }, ensure_ascii=False, indent=2).encode("utf-8")
+            self._send_bytes(200, "application/json; charset=utf-8", body)
+            return
+
+        self._send_bytes(404, "text/plain; charset=utf-8", b"not found")
+
+    def _serve_sse(self, cfg: dict) -> None:
+        """ส่ง event แบบ Server-Sent Events ให้หน้า overlay / OBS Browser Source"""
+        hub: Hub = cfg["hub"]
+        watcher = hub.subscribe()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("Connection", "keep-alive")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(b"retry: 1500\n\n")
+            self.wfile.write(f"data: {json.dumps({'kind': 'stat', 'text': 'connected'})}\n\n".encode())
+            self.wfile.flush()
+            log("overlay เชื่อมต่อแล้ว (SSE)")
+            while True:
+                try:
+                    item = watcher.get(timeout=15)
+                    payload = f"data: {json.dumps(item, ensure_ascii=False)}\n\n".encode("utf-8")
+                except queue.Empty:
+                    payload = b": keepalive\n\n"
+                self.wfile.write(payload)
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+        finally:
+            hub.unsubscribe(watcher)
+            log("overlay ตัดการเชื่อมต่อ")
 
     def log_message(self, fmt, *args):  # ลดเสียงรบกวน
         pass
@@ -498,18 +715,36 @@ def make_forwarder(url: str):
 # คำสั่ง
 # ---------------------------------------------------------------------------
 def cmd_subscribe(args) -> int:
-    if not args.webhook.lower().startswith("https://"):
+    cfg = load_config(config_path(getattr(args, "config", None)))
+    webhook = pick(args.webhook, cfg, "webhook_url", "")
+    if not webhook:
+        fail(
+            "ต้องระบุ URL ของ webhook เช่น\n"
+            "      python kick_events.py subscribe --webhook https://xxxx.trycloudflare.com/kick --broadcaster 123456\n"
+            "      (หรือบันทึกถาวรด้วย: python kick_events.py setup)"
+        )
+    if not webhook.lower().startswith("https://"):
         fail("webhook ต้องเป็น https:// เท่านั้น (Kick ไม่รับ http://)")
+
+    broadcaster = pick(args.broadcaster, cfg, "broadcaster_user_id", None)
+    if not broadcaster:
+        fail("ต้องระบุ --broadcaster <broadcaster_user_id> (หาได้จาก: python kick_chat.py resolve --channel <slug>)")
+
     token = get_access_token(args)
-    events = [e.strip() for e in (args.events or DEFAULT_EVENTS).split(",") if e.strip()]
+    events_raw = pick(None if args.events else None, cfg, "events", [DEFAULT_EVENTS])
+    if args.events:
+        events = [e.strip() for e in args.events.split(",") if e.strip()]
+    elif isinstance(events_raw, list):
+        events = [str(e).strip() for e in events_raw if str(e).strip()]
+    else:
+        events = [e.strip() for e in str(events_raw).split(",") if e.strip()]
     payload = {
         "events": [{"name": name, "version": 1} for name in events],
         "method": "webhook",
-        "broadcaster_user_id": int(args.broadcaster),
+        "broadcaster_user_id": int(broadcaster),
+        "url": webhook,
     }
-    if args.webhook:
-        payload["url"] = args.webhook
-    log(f"ลงทะเบียน {len(events)} event ไปที่ {args.webhook} ...")
+    log(f"ลงทะเบียน {len(events)} event ไปที่ {webhook} ...")
     status, data = api_request("POST", SUBSCRIPTIONS_URL, token, payload)
     if status in (200, 201):
         print(json.dumps(data, ensure_ascii=False, indent=2))
@@ -529,8 +764,10 @@ def cmd_subscribe(args) -> int:
 
 
 def cmd_list(args) -> int:
+    cfg = load_config(config_path(getattr(args, "config", None)))
+    broadcaster = pick(args.broadcaster, cfg, "broadcaster_user_id", None)
     token = get_access_token(args)
-    url = SUBSCRIPTIONS_URL + (f"?broadcaster_user_id={args.broadcaster}" if args.broadcaster else "")
+    url = SUBSCRIPTIONS_URL + (f"?broadcaster_user_id={broadcaster}" if broadcaster else "")
     status, data = api_request("GET", url, token)
     if status != 200:
         print(json.dumps(data, ensure_ascii=False, indent=2) if isinstance(data, dict) else str(data))
@@ -560,51 +797,78 @@ def cmd_delete(args) -> int:
 
 
 def cmd_serve(args) -> int:
-    try:
-        # public-key เป็น endpoint สาธารณะ ไม่ต้องใช้ token
-        pem, key = fetch_public_key(args.public_key_url)
-    except (ConnectionError, ValueError) as exc:
-        if args.verify:
-            fail(f"{exc}\n      ใช้ --no-verify ถ้าต้องการทดสอบก่อน (ไม่แนะนำให้ใช้ในงานจริง)")
-        pem, key = "", (0, 0)
-    if args.verify:
-        log(f"ดึง public key สำเร็จ ({(key[0].bit_length())} บิต)")
-        if args.save_key:
-            Path(args.save_key).write_text(pem, encoding="utf-8")
-            log(f"บันทึกกุญแจไว้ที่ {args.save_key}")
+    cfg_file = config_path(getattr(args, "config", None))
+    cfg = load_config(cfg_file)
 
-    cfg = {
-        "path": args.path,
-        "verify": args.verify,
+    verify = pick(None if args.verify is None else args.verify, cfg, "verify_signature", True)
+    port = int(pick(args.port, cfg, "port", 8081))
+    path = pick(args.path, cfg, "path", "/kick")
+    overlay = pick(None if args.overlay is None else args.overlay, cfg, "overlay", False)
+    write_file = pick(args.write, cfg, "write", None)
+    events_cfg = pick(None, cfg, "events", [DEFAULT_EVENTS])
+
+    public_key = (0, 0)
+    if verify:
+        try:
+            # public-key เป็น endpoint สาธารณะ ไม่ต้องใช้ token
+            pem, public_key = fetch_public_key(getattr(args, "public_key_url", PUBLIC_KEY_URL))
+            log(f"ดึง public key สำเร็จ ({public_key[0].bit_length()} บิต)")
+            if args.save_key:
+                Path(args.save_key).write_text(pem, encoding="utf-8")
+                log(f"บันทึกกุญแจไว้ที่ {args.save_key}")
+        except (ConnectionError, ValueError) as exc:
+            fail(f"{exc}\n      ใช้ --no-verify ถ้าต้องการทดสอบก่อน (ไม่แนะนำให้ใช้ในงานจริง)")
+
+    server_cfg = {
+        "path": path,
+        "verify": verify,
         "accept_bad": args.accept_bad,
         "all_events": args.all_events,
         "json_lines": args.json_lines,
-        "write": args.write,
+        "write": str(Path(write_file).expanduser()) if write_file else None,
         "write_lock": threading.Lock(),
         "forward": make_forwarder(args.forward) if args.forward else None,
-        "public_key": key,
+        "public_key": public_key,
         "count": 0,
         "limit": args.limit,
+        "overlay": bool(overlay),
+        "hub": Hub() if overlay else None,
     }
+
     bind = args.bind or "0.0.0.0"
     try:
-        server = http.server.ThreadingHTTPServer((bind, args.port), WebhookHandler)
+        server = http.server.ThreadingHTTPServer((bind, port), WebhookHandler)
     except OSError as exc:
-        fail(f"เปิดพอร์ต {args.port} ไม่ได้: {exc}")
-    server.cfg = cfg  # type: ignore[attr-defined]
+        fail(f"เปิดพอร์ต {port} ไม่ได้: {exc}")
+    server.cfg = server_cfg  # type: ignore[attr-defined]
 
-    print(f"[OK]  รับ webhook ที่  http://{bind}:{args.port}{args.path}  (กด Ctrl+C เพื่อหยุด)", flush=True)
-    if args.verify:
-        print("      ตรวจลายเซ็น RSA (Kick-Event-Signature) ให้อัตโนมัติ — event ที่ลายเซ็นผิดจะได้ 401", flush=True)
+    print(f"[OK]  รับ webhook ที่  http://{bind}:{port}{path}  (กด Ctrl+C เพื่อหยุด)", flush=True)
+    if verify:
+        print("      ตรวจลายเซ็น RSA (Kick-Event-Signature) ให้อัตโนมัติ — ลายเซ็นผิดจะได้ 401 และไม่บันทึก", flush=True)
     else:
         print("      [!] ปิดการตรวจลายเซ็น — ใช้เฉพาะตอนทดสอบ", flush=True)
-    if args.public_url:
-        print(f"      ลงทะเบียนกับ Kick ด้วย:  python kick_events.py subscribe --webhook {args.public_url}{args.path} --broadcaster <id>", flush=True)
+    if write_file:
+        print(f"      บันทึกทุก event ต่อท้ายไฟล์: {server_cfg['write']}", flush=True)
+    if overlay:
+        print(f"      หน้า overlay สำหรับ OBS:  http://localhost:{port}/overlay", flush=True)
+        print(f"      (OBS → Sources → + → Browser → URL ด้านบน, กว้าง 480 สูง 720, ติ๊ก 'Shutdown source when not visible' ออก)", flush=True)
+    if cfg_file.is_file():
+        print(f"      ใช้ค่าเริ่มต้นจาก config: {cfg_file}", flush=True)
+    else:
+        print("      (ยังไม่มีไฟล์ config — สร้างได้ด้วย: python kick_events.py setup)", flush=True)
+    if events_cfg and isinstance(events_cfg, list):
+        print(f"      event ที่จะรับ (ตาม config): {', '.join(map(str, events_cfg))}", flush=True)
+    print(f"      ตรวจสถานะ: http://localhost:{port}/status", flush=True)
+
+    public_url = args.public_url or cfg.get("webhook_url") or ""
+    if public_url:
+        print(f"      ลงทะเบียนกับ Kick ด้วย:  python kick_events.py subscribe --webhook {public_url}", flush=True)
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         print()
-        log(f"หยุด — รับไปทั้งหมด {cfg['count']} event")
+        log(f"หยุด — รับไปทั้งหมด {server_cfg['count']} event")
     finally:
         server.server_close()
     return 0
@@ -642,7 +906,7 @@ def cmd_verify(args) -> int:
     if pem_path and pem_path.is_file():
         pem = pem_path.read_text(encoding="utf-8")
     else:
-        pem, _ = fetch_public_key(args.public_key_url)
+        pem, _ = fetch_public_key(getattr(args, "public_key_url", PUBLIC_KEY_URL))
     n, e = parse_rsa_public_key_pem(pem)
     signature = base64.b64decode(signature_b64, validate=True)
     signed = build_signed_message(message_id, timestamp, body)
@@ -655,11 +919,109 @@ def cmd_verify(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+def cmd_setup(args) -> int:
+    """สร้าง/แก้ไฟล์ kick_events_config.json แบบถามทีละข้อ"""
+    path = config_path(getattr(args, "config", None))
+    current = load_config(path)
+    print(f"=== ตั้งค่า Events API ({path}) ===")
+    print("(กด Enter เพื่อใช้ค่าเดิม/ค่าเริ่มต้น)")
+
+    def ask(prompt: str, key: str, default=None):
+        old = current.get(key, default)
+        shown = f" [{old}]" if old not in (None, "", []) else ""
+        answer = input(f"{prompt}{shown}: ").strip()
+        if answer:
+            return answer
+        return old
+
+    broadcaster = ask("broadcaster_user_id (ตัวเลข)", "broadcaster_user_id", 0)
+    webhook = ask("webhook URL (https://...)", "webhook_url", "")
+    port = ask("พอร์ตที่จะเปิดรับ", "port", 8081)
+    path_in = ask("path ที่รับ webhook", "path", "/kick")
+    write = ask("ไฟล์บันทึก event (NDJSON, เว้นว่าง=ไม่บันทึก)", "write", "chat.ndjson")
+    overlay = ask("เปิด overlay สำหรับ OBS? (y/n)", "overlay", True)
+    events = ask("event ที่จะรับ (คั่นด้วยจุลภาค)", "events", "chat.message.sent")
+
+    def to_bool(value, default=True):
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in ("y", "yes", "true", "1", "ใช่"):
+            return True
+        if text in ("n", "no", "false", "0", "ไม่"):
+            return False
+        return default
+
+    try:
+        broadcaster_id = int(broadcaster or 0)
+    except (TypeError, ValueError):
+        broadcaster_id = 0
+    try:
+        port_number = int(port or 8081)
+    except (TypeError, ValueError):
+        port_number = 8081
+
+    data = {
+        "broadcaster_user_id": broadcaster_id,
+        "webhook_url": str(webhook or ""),
+        "events": [e.strip() for e in str(events).split(",") if e.strip()],
+        "port": port_number,
+        "path": str(path_in or "/kick"),
+        "verify_signature": True,
+        "overlay": to_bool(overlay, True),
+        "write": str(write or ""),
+    }
+    save_config(path, data)
+    print()
+    print(f"[OK]  บันทึกแล้ว: {path}")
+    print(json.dumps(load_config(path), ensure_ascii=False, indent=2))
+    print()
+    print("ขั้นต่อไป:")
+    print("  1) python kick_events.py serve            # เปิดตัวรับ (อ่านค่าจากไฟล์นี้)")
+    print("  2) python kick_events.py subscribe        # ลงทะเบียนกับ Kick")
+    print("  3) ใส่ URL นี้ใน OBS Browser Source:  http://localhost:%d/overlay" % port_number)
+    return 0
+
+
+def cmd_status(args) -> int:
+    """สรุปการตั้งค่าปัจจุบัน + ตรวจ endpoint ในเครื่อง (ถ้าเปิดอยู่)"""
+    path = config_path(getattr(args, "config", None))
+    cfg = load_config(path)
+    print("=== สถานะ Events API ===")
+    print(f"ไฟล์ config    : {path} ({'พบ' if path.is_file() else 'ยังไม่มี — รัน setup'})")
+    if cfg:
+        print(json.dumps(cfg, ensure_ascii=False, indent=2))
+    url = args.public_url or cfg.get("webhook_url") or ""
+    port = cfg.get("port", 8081)
+    if url:
+        print(f"ตรวจ tunnel   : ลอง GET {url}")
+        try:
+            with urllib.request.urlopen(url, timeout=8) as resp:
+                print(f"   -> HTTP {resp.status}: {resp.read(300).decode('utf-8', 'replace')}")
+        except urllib.error.HTTPError as exc:
+            print(f"   -> HTTP {exc.code} (tunnel ถึงเครื่องแล้ว แต่ path อาจไม่ตรง)")
+        except urllib.error.URLError as exc:
+            print(f"   -> เชื่อมต่อไม่ได้: {exc.reason} (tunnel ยังไม่รัน หรือ URL ผิด)")
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/status", timeout=3) as resp:
+            print(f"ตัวรับในเครื่อง: ทำงานอยู่ — {resp.read(200).decode('utf-8', 'replace')}")
+    except (urllib.error.URLError, OSError):
+        print(f"ตัวรับในเครื่อง: ยังไม่ทำงาน (เปิดด้วย: python kick_events.py serve)")
+    print()
+    print("ถ้าต้องการดู subscription ที่ลงทะเบียนไว้:  python kick_events.py list")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
+    # หมายเหตุ: ใช้ default=SUPPRESS เพื่อไม่ให้ subparser ทับค่าที่ผู้ใช้ใส่ไว้ "ก่อน" ชื่อคำสั่ง
+    # (เช่น  kick_events.py --config my.json serve  ต้องได้ my.json ไม่ถูกทับด้วย None)
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--tokens", help="ไฟล์ token (ค่าเริ่มต้น kick_tokens.json)")
-    common.add_argument("--credentials", help="ไฟล์ credentials (ค่าเริ่มต้น kick_credentials.json)")
-    common.add_argument("--public-key-url", dest="public_key_url", default=PUBLIC_KEY_URL,
+    common.add_argument("--tokens", default=argparse.SUPPRESS, help="ไฟล์ token (ค่าเริ่มต้น kick_tokens.json)")
+    common.add_argument("--credentials", default=argparse.SUPPRESS,
+                        help="ไฟล์ credentials (ค่าเริ่มต้น kick_credentials.json)")
+    common.add_argument("--config", metavar="FILE", default=argparse.SUPPRESS,
+                        help=f"ไฟล์ตั้งค่า (ค่าเริ่มต้น {CONFIG_NAME})")
+    common.add_argument("--public-key-url", dest="public_key_url", default=argparse.SUPPRESS,
                         help="URL ของ public key (ค่าเริ่มต้นของ Kick)")
 
     parser = argparse.ArgumentParser(
@@ -667,13 +1029,21 @@ def build_parser() -> argparse.ArgumentParser:
         description="Kick Events API (webhook) — ทางเลือกทางการแทน Pusher WebSocket",
         parents=[common],
     )
-    sub = parser.add_subparsers(dest="command", metavar="{subscribe,list,delete,serve,verify}")
+    parser.set_defaults(tokens=None, credentials=None, config=None, public_key_url=PUBLIC_KEY_URL)
+    sub = parser.add_subparsers(dest="command", metavar="{setup,serve,subscribe,list,delete,status,verify}")
 
-    p = sub.add_parser("subscribe", parents=[common], help="ลงทะเบียน webhook")
-    p.add_argument("--webhook", required=True, help="URL https สาธารณะที่ Kick จะยิงเข้ามา")
-    p.add_argument("--broadcaster", required=True, help="broadcaster_user_id ของช่องคุณ")
+    p = sub.add_parser("setup", parents=[common], help="สร้าง/แก้ไฟล์ตั้งค่า kick_events_config.json")
+    p.set_defaults(func=cmd_setup)
+
+    p = sub.add_parser("subscribe", parents=[common], help="ลงทะเบียน webhook กับ Kick")
+    p.add_argument("--webhook", help="URL https สาธารณะที่ Kick จะยิงเข้ามา (หรือใช้ค่าจาก config)")
+    p.add_argument("--broadcaster", type=int, help="broadcaster_user_id ของช่องคุณ (หรือใช้ค่าจาก config)")
     p.add_argument("--events", help=f"รายการ event คั่นด้วยจุลภาค (ค่าเริ่มต้น {DEFAULT_EVENTS})")
     p.set_defaults(func=cmd_subscribe)
+
+    p = sub.add_parser("status", parents=[common], help="สรุปการตั้งค่า + ตรวจว่า tunnel/ตัวรับทำงานอยู่ไหม")
+    p.add_argument("--public-url", dest="public_url", help="URL สาธารณะที่จะทดสอบ (ปกติใช้จาก config)")
+    p.set_defaults(func=cmd_status)
 
     p = sub.add_parser("list", parents=[common], help="ดู subscription ที่มี")
     p.add_argument("--broadcaster", help="กรองเฉพาะ broadcaster_user_id นี้")
@@ -683,16 +1053,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--id", action="append", required=True, help="subscription id (ใส่ซ้ำได้)")
     p.set_defaults(func=cmd_delete)
 
-    p = sub.add_parser("serve", parents=[common], help="เปิดเซิร์ฟเวอร์รับ webhook ในเครื่อง")
-    p.add_argument("--port", type=int, default=8081)
+    p = sub.add_parser("serve", parents=[common], help="เปิดเซิร์ฟเวอร์รับ webhook + overlay สำหรับ OBS")
+    p.add_argument("--port", type=int, help="พอร์ต (ค่าเริ่มต้นจาก config หรือ 8081)")
     p.add_argument("--bind", default="0.0.0.0", help="ที่อยู่ที่ผูกพอร์ต (ค่าเริ่มต้น 0.0.0.0)")
-    p.add_argument("--path", default="/kick", help="path ที่รับ webhook (ค่าเริ่มต้น /kick)")
-    p.add_argument("--no-verify", dest="verify", action="store_false", default=True,
+    p.add_argument("--path", help="path ที่รับ webhook (ค่าเริ่มต้นจาก config หรือ /kick)")
+    p.add_argument("--overlay", action="store_true", default=None,
+                   help="เปิดหน้า overlay + SSE ที่ /overlay (OBS Browser Source)")
+    p.add_argument("--no-overlay", dest="overlay", action="store_false", help="ปิด overlay")
+    p.add_argument("--no-verify", dest="verify", action="store_false", default=None,
                    help="ปิดการตรวจลายเซ็น (ใช้เฉพาะทดสอบ)")
     p.add_argument("--accept-bad", action="store_true", help="ตอบ 200 แม้ลายเซ็นผิด (ดีบัก)")
     p.add_argument("--all-events", action="store_true", help="แสดงทุก event ไม่ใช่แค่แชท")
     p.add_argument("--json-lines", action="store_true", help="พิมพ์แชทเป็น JSON 1 บรรทัด/ข้อความ")
-    p.add_argument("--write", help="ต่อท้ายทุก event ลงไฟล์นี้ (NDJSON)")
+    p.add_argument("--write", help="ต่อท้ายทุก event ลงไฟล์นี้ (NDJSON) — ค่าเริ่มต้นจาก config")
     p.add_argument("--forward", help="ส่งต่อ raw body ไปยัง URL ในเครื่อง/อื่น ๆ")
     p.add_argument("--limit", type=int, default=0, help="หยุดหลังรับครบ N event")
     p.add_argument("--save-key", help="บันทึก public key ที่ดึงมาไว้ที่ไฟล์นี้")
@@ -710,14 +1083,48 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def prescan_option(argv: list[str], name: str):
+    """อ่านค่าของ option จาก argv ตรง ๆ (กันข้อจำกัดของ argparse subparser ที่ทับค่าที่ใส่ไว้
+    ก่อนชื่อคำสั่ง เช่น  script.py --config A.json serve  → argparse ให้ค่า None)"""
+    for index, item in enumerate(argv):
+        if item == name:
+            if index + 1 < len(argv):
+                return argv[index + 1]
+            return None
+        if item.startswith(name + "="):
+            return item.split("=", 1)[1]
+    return None
+
+
+def apply_prescanned(args, argv: list[str], specs) -> None:
+    """specs = [(option, attribute, caster), ...] — เติมค่าให้ args ถ้ายังว่างอยู่"""
+    for option, attribute, caster in specs:
+        raw = prescan_option(argv, option)
+        if raw is None:
+            continue
+        current = getattr(args, attribute, None)
+        if current in (None, "", []):
+            try:
+                setattr(args, attribute, caster(raw))
+            except (TypeError, ValueError):
+                setattr(args, attribute, raw)
+
+
 def main(argv: list[str] | None = None) -> int:
     _fix_stdout()
     argv = list(sys.argv[1:] if argv is None else argv)
-    commands = {"subscribe", "list", "delete", "serve", "verify"}
+    commands = {"setup", "serve", "subscribe", "list", "delete", "status", "verify"}
     if not argv or (argv[0].startswith("-") and argv[0] not in ("-h", "--help")):
-        argv = ["list"] + argv
+        argv = ["status"] + argv
     parser = build_parser()
     args = parser.parse_args(argv)
+    apply_prescanned(args, argv, [
+        ("--config", "config", str),
+        ("--tokens", "tokens", str),
+        ("--credentials", "credentials", str),
+        ("--public-key-url", "public_key_url", str),
+        ("--tokens", "tokens", str),
+    ])
     if not getattr(args, "func", None):
         parser.print_help()
         return 2

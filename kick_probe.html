@@ -1,0 +1,352 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<title>Kick Pusher Probe — หา cluster/key ที่ใช้ได้จริง</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#0f1115; color:#e6e6e6; font-family:'Segoe UI',Tahoma,sans-serif; line-height:1.5; }
+  .wrap { max-width: 1100px; margin: 0 auto; padding: 24px 20px 60px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h1 span { color:#53fc18; }
+  p.lead { color:#9aa4b2; margin: 0 0 20px; }
+  .card { background:#171a21; border:1px solid #262b36; border-radius:12px; padding:16px 18px; margin-bottom:16px; }
+  .card h2 { font-size:15px; margin:0 0 10px; color:#c9d3e0; }
+  label { display:block; font-size:13px; color:#9aa4b2; margin:10px 0 4px; }
+  input[type=text], textarea {
+    width:100%; background:#0d1016; color:#e6e6e6; border:1px solid #2b3240; border-radius:8px;
+    padding:9px 11px; font-family:Consolas,'Courier New',monospace; font-size:13px;
+  }
+  textarea { min-height:64px; resize:vertical; }
+  .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+  button {
+    background:#53fc18; color:#08210a; border:0; border-radius:9px; padding:10px 16px;
+    font-weight:700; font-size:14px; cursor:pointer;
+  }
+  button.ghost { background:#222835; color:#dfe6f0; font-weight:600; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th, td { text-align:left; padding:7px 9px; border-bottom:1px solid #232a36; vertical-align:top; }
+  th { color:#8e9aab; font-weight:600; font-size:12.5px; text-transform:uppercase; letter-spacing:.03em; }
+  tr.ok td { background:rgba(83,252,24,.09); }
+  tr.wrong td { background:rgba(255,86,86,.07); }
+  .tag { border-radius:6px; padding:2px 7px; font-size:12px; font-weight:700; }
+  .tag.ok { background:#1d3b12; color:#8dff4d; }
+  .tag.bad { background:#3b1414; color:#ff8d8d; }
+  .tag.wait { background:#2a2f3a; color:#b9c2d0; }
+  code, pre { background:#0d1016; border:1px solid #232a36; border-radius:8px; }
+  code { padding:2px 6px; font-size:12.5px; }
+  pre { padding:12px; overflow:auto; font-size:12.5px; }
+  .muted { color:#8e9aab; font-size:12.5px; }
+  .win { background:#10240c; border:1px solid #2f5c1f; border-radius:10px; padding:12px 14px; margin-top:14px; }
+  .win b { color:#8dff4d; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(220px,1fr)); gap:8px; }
+  .chk { display:flex; align-items:center; gap:7px; font-size:13px; color:#c9d3e0; }
+  .chk input { width:16px; height:16px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Kick Pusher Probe <span>— หา cluster/key ที่ใช้ได้จริง</span></h1>
+  <p class="lead">
+    ไฟล์นี้ทำงานในเบราว์เซอร์ของคุณเอง (ไม่ต้องติดตั้งอะไร ไม่ต้องมี Python) — จะไล่ทดสอบทุก cluster × ทุก key
+    แล้วบอกว่า <b>คู่ไหนที่ Pusher ตอบ <code>pusher:connection_established</code></b>
+  </p>
+
+  <div class="card">
+    <h2>1) ค่าเริ่มต้น</h2>
+    <label>App keys (บรรทัดละ 1 ค่า — เพิ่มค่าที่คุณสงสัยได้)</label>
+    <textarea id="keys">32cbd69e4b950bf97679
+34bf7a0ff419a2a775b9</textarea>
+    <label>Cluster ที่จะทดสอบ (บรรทัดละ 1 ค่า)</label>
+    <textarea id="clusters">us2
+us3
+us1
+eu
+ap1
+ap2
+ap3
+ap4
+mt1
+sa1
+in1</textarea>
+    <label>Channel ที่จะทดสอบหลังเชื่อมต่อได้ (ไม่บังคับ — ใส่ chatroom_id ถ้าอยากยืนยันว่าได้ข้อความจริง)</label>
+    <input type="text" id="chatroom" placeholder="เช่น 123456 (เว้นว่างได้)">
+    <div class="row" style="margin-top:14px">
+      <button id="go">เริ่มทดสอบ</button>
+      <button class="ghost" id="stop" disabled>หยุด</button>
+      <span class="muted" id="status">พร้อมทำงาน</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>2) ผลการทดสอบ</h2>
+    <table id="results">
+      <thead><tr><th style="width:90px">cluster</th><th style="width:170px">key</th><th>ผลลัพธ์</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div id="winner"></div>
+  </div>
+
+  <div class="card">
+    <h2>3) ดึงค่าจริงจากหน้า Kick (ทำเมื่อข้อ 2 ยังไม่เจอคู่ที่ใช้ได้)</h2>
+    <p class="muted" style="margin-top:0">
+      เปิด <b>https://kick.com/</b> ในแท็บใหม่ → กด <b>F12</b> → แท็บ <b>Console</b> → วางโค้ดนี้ (บรรทัดเดียว) แล้ว Enter:
+    </p>
+    <pre id="snippet">(()=>{const w=performance.getEntriesByType('resource').map(e=>e.name).filter(n=>/pusher/i.test(n));const s=w.join('\n')||'ไม่พบ — กด F5 รีเฟรชหน้าแล้วรันอีกครั้ง';copy(s);console.log(s);return s})()</pre>
+    <div class="row">
+      <button class="ghost" id="copySnippet">คัดลอกโค้ดบรรทัดนั้น</button>
+    </div>
+    <label style="margin-top:14px">วางผลลัพธ์ที่ได้จาก Console ที่นี่ (ทั้ง URL หรือแค่ key)</label>
+    <textarea id="pasted" placeholder="wss://ws-us2.pusher.com/app/xxxxxxxxxxxxxxxxxxxxxxxx?protocol=7&client=js&version=8.4.0-rc2&flash=false"></textarea>
+    <div class="row" style="margin-top:10px">
+      <button class="ghost" id="usePasted">ดึง key/cluster จากข้อความนี้ แล้วทดสอบซ้ำ</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>4) ถ้าพบคู่ที่ใช้ได้</h2>
+    <p class="muted" style="margin-top:0">
+      จะมีปุ่มให้คัดลอก URL ไปใส่ config ของคุณ และคัดลอกคำสั่ง Python สำหรับยืนยันซ้ำด้วย
+      <code>ws_probe.py --url "..."</code>
+    </p>
+    <div id="howto" class="muted">— ยังไม่มีผลลัพธ์ —</div>
+  </div>
+</div>
+
+<script>
+(function () {
+  "use strict";
+  const KNOWN_PUBLIC_KEY = "32cbd69e4b950bf97679";
+  const VERSION = "8.4.0-rc2";
+  const resultsBody = document.querySelector("#results tbody");
+  const statusEl = document.getElementById("status");
+  const winnerEl = document.getElementById("winner");
+  const howtoEl = document.getElementById("howto");
+  const goBtn = document.getElementById("go");
+  const stopBtn = document.getElementById("stop");
+  let running = false;
+  let stopRequested = false;
+
+  function lines(id) {
+    return document.getElementById(id).value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+  }
+  function shortKey(k) { return k.length > 10 ? k.slice(0, 10) + "..." : k; }
+
+  function addRow(cluster, key) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${cluster}</td><td>${shortKey(key)}</td>
+      <td><span class="tag wait">กำลังทดสอบ…</span></td>`;
+    resultsBody.appendChild(tr);
+    return tr;
+  }
+
+  function setRow(tr, kind, text) {
+    tr.className = kind === "ok" ? "ok" : (kind === "wrong" ? "wrong" : "");
+    const cell = tr.lastElementChild;
+    const label = kind === "ok" ? "ต่อได้" : (kind === "wrong" ? "ผิด cluster/key" : "ต่อไม่ได้");
+    cell.innerHTML = `<span class="tag ${kind === "ok" ? "ok" : "bad"}">${label}</span> ${text}`;
+    tr.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }
+
+  function wsUrl(cluster, key) {
+    return `wss://ws-${cluster}.pusher.com/app/${key}?protocol=7&client=js&version=${VERSION}&flash=false`;
+  }
+
+  // ทดสอบคู่เดียว: คืน {ok:bool, reason:string, detail:string, socketId:string}
+  function testPair(cluster, key, chatroom, timeoutMs) {
+    return new Promise(resolve => {
+      let done = false;
+      let ws;
+      const timer = setTimeout(() => {
+        if (done) return;
+        done = true;
+        try { ws && ws.close(); } catch (e) {}
+        resolve({ ok: false, reason: "timeout", detail: `ไม่มีการตอบกลับภายใน ${timeoutMs / 1000} วินาที` });
+      }, timeoutMs);
+
+      try {
+        ws = new WebSocket(wsUrl(cluster, key));
+      } catch (err) {
+        clearTimeout(timer);
+        done = true;
+        resolve({ ok: false, reason: "error", detail: "สร้าง WebSocket ไม่ได้: " + err.message });
+        return;
+      }
+
+      ws.onmessage = ev => {
+        let data = {};
+        try { data = JSON.parse(ev.data); } catch (e) { data = { event: "?", raw: String(ev.data).slice(0, 120) }; }
+        const name = data.event || "?";
+        if (name === "pusher:connection_established") {
+          let socketId = "";
+          try { socketId = JSON.parse(data.data || "{}").socket_id || ""; } catch (e) {}
+          if (chatroom) {
+            try { ws.send(JSON.stringify({ event: "pusher:subscribe", data: { auth: "", channel: `chatrooms.${chatroom}.v2` } })); } catch (e) {}
+          }
+          clearTimeout(timer);
+          done = true;
+          try { ws.close(); } catch (e) {}
+          resolve({ ok: true, reason: "ok", detail: `socket_id=${socketId}`, socketId });
+          return;
+        }
+        if (name === "pusher:error") {
+          let msg = "";
+          try { msg = (JSON.parse(data.data || "{}").message) || String(data.data || ""); } catch (e) { msg = String(data.data || ""); }
+          clearTimeout(timer);
+          done = true;
+          try { ws.close(); } catch (e) {}
+          const notInCluster = /not in this cluster/i.test(msg);
+          const unknownKey = /does not exist|Application does not exist|app key .* not/i.test(msg);
+          resolve({
+            ok: false,
+            reason: notInCluster ? "wrong-cluster" : (unknownKey ? "unknown-key" : "error"),
+            detail: msg || name,
+          });
+        }
+      };
+      ws.onerror = () => {
+        if (done) return;
+        clearTimeout(timer);
+        done = true;
+        resolve({ ok: false, reason: "error", detail: "เกิดข้อผิดพลาดที่ WebSocket (เน็ต/ไฟร์วอลล์/ชื่อ host)" });
+      };
+      ws.onclose = ev => {
+        if (done) return;
+        clearTimeout(timer);
+        done = true;
+        resolve({ ok: false, reason: "closed", detail: `ปิดการเชื่อมต่อก่อนได้คำตอบ (code ${ev.code})` });
+      };
+    });
+  }
+
+  async function run() {
+    if (running) return;
+    running = true;
+    stopRequested = false;
+    goBtn.disabled = true;
+    stopBtn.disabled = false;
+    resultsBody.innerHTML = "";
+    winnerEl.innerHTML = "";
+    howtoEl.textContent = "— กำลังทดสอบ —";
+
+    const keys = [...new Set(lines("keys"))];
+    const clusters = [...new Set(lines("clusters"))];
+    const chatroom = document.getElementById("chatroom").value.trim();
+    const perTry = 6000;
+    const winners = [];
+    let counter = 0;
+
+    const queue = [];
+    keys.forEach(k => clusters.forEach(c => queue.push([c, k])));
+    const total = queue.length;
+
+    async function worker() {
+      while (queue.length) {
+        if (stopRequested) return;
+        const [cluster, key] = queue.shift();
+        const tr = addRow(cluster, key);
+        const r = await testPair(cluster, key, chatroom, perTry);
+        counter++;
+        if (r.ok) {
+          setRow(tr, "ok", r.detail + (chatroom ? " + subscribe แล้ว" : ""));
+          winners.push({ cluster, key, url: wsUrl(cluster, key) });
+        } else if (r.reason === "wrong-cluster") {
+          setRow(tr, "wrong", "Pusher: " + r.detail);
+        } else {
+          setRow(tr, "wrong", (r.reason === "timeout" ? "หมดเวลา: " : "") + r.detail);
+        }
+        statusEl.textContent = `ทดสอบแล้ว ${counter}/${total} — พบคู่ที่ใช้ได้ ${winners.length}`;
+      }
+    }
+
+    const workers = Array.from({ length: Math.min(4, queue.length) }, worker);
+    await Promise.all(workers);
+
+    running = false;
+    goBtn.disabled = false;
+    stopBtn.disabled = true;
+    statusEl.textContent = stopRequested ? "หยุดกลางทาง" : `เสร็จแล้ว — พบ ${winners.length} คู่ที่ใช้ได้`;
+
+    if (!winners.length) {
+      winnerEl.innerHTML = `<div class="card" style="background:#241010;border-color:#5c1f1f">
+        <b style="color:#ff9d9d">ไม่พบคู่ cluster+key ที่ใช้ได้เลย</b>
+        <p class="muted" style="margin:8px 0 0">ทำตามข้อ 3: ดึงค่าจริงจากหน้า Kick ด้วย Console แล้ววางกลับมาทดสอบซ้ำ</p></div>`;
+      howtoEl.textContent = "ยังไม่พบ — ไปทำข้อ 3";
+      return;
+    }
+
+    const best = winners.find(w => w.cluster === "us2") || winners[0];
+    winnerEl.innerHTML = `<div class="win">
+      <b>✅ ใช้ค่านี้:</b><br>
+      <code>${best.url}</code><br>
+      <span class="muted">cluster = ${best.cluster} · key = ${best.key}${best.key === KNOWN_PUBLIC_KEY ? " (key สาธารณะเดิม — ปัญหาอยู่ที่ cluster/host)" : " (key ต่างจากที่รู้จัก — Kick หมุน key!)"}</span>
+      <div class="row" style="margin-top:10px">
+        <button id="copyUrl">คัดลอก URL</button>
+        <button class="ghost" id="copyPy">คัดลอกคำสั่ง Python ยืนยันซ้ำ</button>
+        <button class="ghost" id="copyCfg">คัดลอก JSON สำหรับ config.json</button>
+      </div>
+    </div>`;
+
+    const pyCmd = `python ws_probe.py --url "${best.url}"`;
+    const cfg = JSON.stringify({
+      pusher: { cluster: best.cluster, appKey: best.key, wsUrl: best.url, channelTemplate: "chatrooms.{chatroom_id}.v2" },
+    }, null, 2);
+
+    document.getElementById("copyUrl").onclick = () => copy(best.url, "คัดลอก URL แล้ว");
+    document.getElementById("copyPy").onclick = () => copy(pyCmd, "คัดลอกคำสั่ง Python แล้ว");
+    document.getElementById("copyCfg").onclick = () => copy(cfg, "คัดลอก JSON แล้ว");
+
+    howtoEl.innerHTML = `
+      <ol style="margin:6px 0 0; padding-left:20px">
+        <li>วางค่าลง config ของคุณ (หรือใช้ปุ่มด้านบน)</li>
+        <li>ยืนยันซ้ำจากฝั่ง Python: <code>${pyCmd.replace(/</g, "&lt;")}</code></li>
+        <li>รีสตาร์ทโปรแกรม และ<b>ปิด process เก่า</b>ก่อน (taskkill /IM python.exe /F)</li>
+      </ol>`;
+  }
+
+  function copy(text, message) {
+    const done = () => { statusEl.textContent = message || "คัดลอกแล้ว"; };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, () => fallback());
+    } else fallback();
+    function fallback() {
+      const ta = document.createElement("textarea");
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand("copy"); done(); } catch (e) { statusEl.textContent = "คัดลอกไม่สำเร็จ — เลือกข้อความด้วยมือ"; }
+      ta.remove();
+    }
+  }
+
+  document.getElementById("go").onclick = () => run();
+  document.getElementById("stop").onclick = () => { stopRequested = true; statusEl.textContent = "กำลังหยุด…"; };
+  document.getElementById("copySnippet").onclick = () => copy(document.getElementById("snippet").textContent, "คัดลอกโค้ด Console แล้ว");
+
+  document.getElementById("usePasted").onclick = () => {
+    const text = document.getElementById("pasted").value;
+    const urls = text.match(/wss?:\/\/[^\s"'`,)]+/g) || [];
+    const foundClusters = [...new Set((text.match(/ws-([a-z0-9]+)\.pusher\.com/gi) || [])
+      .map(s => s.replace(/^ws-/i, "").replace(/\.pusher\.com$/i, "").toLowerCase()))];
+    const foundKeys = [...new Set((text.match(/\b[0-9a-f]{12,40}\b/gi) || []))];
+    if (urls.length) {
+      urls.forEach(u => {
+        const m = u.match(/\/app\/([0-9a-zA-Z]+)/);
+        if (m) foundKeys.push(m[1]);
+        const h = u.match(/ws-([a-z0-9]+)\.pusher\.com/i);
+        if (h) foundClusters.push(h[1].toLowerCase());
+      });
+    }
+    if (!foundKeys.length && !foundClusters.length) {
+      statusEl.textContent = "ไม่พบ key/cluster ในข้อความนั้น";
+      return;
+    }
+    if (foundKeys.length) document.getElementById("keys").value = [...new Set(foundKeys)].join("\n");
+    if (foundClusters.length) document.getElementById("clusters").value = [...new Set(foundClusters)].join("\n");
+    statusEl.textContent = `ตั้งค่าใหม่: ${foundKeys.length} key × ${foundClusters.length} cluster — กำลังทดสอบ`;
+    run();
+  };
+})();
+</script>
+</body>
+</html>

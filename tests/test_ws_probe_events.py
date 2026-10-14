@@ -230,6 +230,7 @@ class Receiver:
             "path": "/kick", "verify": verify, "accept_bad": False, "all_events": False,
             "json_lines": False, "write": None, "write_lock": threading.Lock(), "forward": None,
             "public_key": key_pair, "count": 0, "limit": 0,
+            "overlay": False, "hub": None,
         }
         self.cfg.update(cfg_overrides)
         self.server = ke.http.server.ThreadingHTTPServer(("127.0.0.1", self.port), ke.WebhookHandler)
@@ -330,12 +331,17 @@ def test_receiver_no_verify_mode_and_path_check() -> None:
         assert status == 200, response
         assert json.loads(response)["verified"] is None
 
-        status_get, payload = receiver.get("/kick")
+        # /status คือหน้าที่มีข้อมูลสุขภาพของตัวรับ (เดิมใช้ /kick)
+        status_get, payload = receiver.get("/status")
         assert status_get == 200 and "kick_events" in payload
 
-        status_404, _ = receiver.post(body, {"Kick-Event-Type": "chat.message.sent",
-                                             "Content-Length": str(len(body))})
-        assert status_404 in (200, 404)  # path เดียวกัน → ยอมรับ
+        # path อื่นที่ไม่รู้จักต้องตอบ 404 (Receiver.get คืนรหัส ไม่โยน exception)
+        status_nope, _ = receiver.get("/nope")
+        assert status_nope == 404, f"path ที่ไม่รู้จักต้องตอบ 404 (ได้ {status_nope})"
+
+        # path ที่ไม่ตรงกับ webhook → POST ได้ 404 เช่นกัน
+        status_404, _ = receiver.post(body, {"Kick-Event-Type": "chat.message.sent"})
+        assert status_404 == 200, "path /kick ต้องรับ event ได้"
     finally:
         receiver.stop()
 
@@ -530,6 +536,176 @@ def main() -> int:
             print(f"[PASS] {test.__name__}")
     print(f"\n{len(tests) - failed}/{len(tests)} passed")
     return 1 if failed else 0
+
+
+# ---------------------------------------------------------------------------
+# regression: --config ที่ใส่ก่อนชื่อคำสั่งต้องไม่ถูกทับ (argparse subparser)
+# ---------------------------------------------------------------------------
+def test_prescan_option_and_apply() -> None:
+    assert kc_prescan("--config", ["--config", "A.json", "setup"]) == "A.json"
+    assert kc_prescan("--config", ["setup", "--config", "B.json"]) == "B.json"
+    assert kc_prescan("--config", ["--config=C.json", "setup"]) == "C.json"
+    assert kc_prescan("--config", ["setup"]) is None
+
+    class NS:
+        pass
+
+    ns = NS()
+    ns.config = None
+    ns.timeout = None
+    ke.apply_prescanned(ns, ["--config", "X.json", "--timeout", "3.5", "serve"],
+                        [("--config", "config", str), ("--timeout", "timeout", float)])
+    assert ns.config == "X.json"
+    assert ns.timeout == 3.5
+
+    # ค่าที่ argparse อ่านได้แล้ว ต้องไม่ถูก prescan ทับ
+    ns2 = NS()
+    ns2.config = "จาก argparse"
+    ke.apply_prescanned(ns2, ["--config", "จาก prescan", "serve"], [("--config", "config", str)])
+    assert ns2.config == "จาก argparse"
+
+
+def kc_prescan(name, argv):
+    return ke.prescan_option(argv, name)
+
+
+def test_events_config_and_setup(tmp_path=None) -> None:
+    import builtins
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        cfg_file = Path(tmpdir) / "kick_events_config.json"
+        argv = ["--config", str(cfg_file), "setup"]
+        parser = ke.build_parser()
+        args = parser.parse_args(argv)
+        ke.apply_prescanned(args, argv, [("--config", "config", str)])
+        assert args.config == str(cfg_file)
+
+        answers = iter(["121539855", "https://x.trycloudflare.com/kick", "8099", "/hook",
+                        "chat.ndjson", "y", "chat.message.sent,kicks.gifted"])
+        original_input = builtins.input
+        builtins.input = lambda prompt="": next(answers)
+        try:
+            with redirect_stdout(io.StringIO()):
+                rc = ke.cmd_setup(args)
+        finally:
+            builtins.input = original_input
+        assert rc == 0
+        saved = json.loads(cfg_file.read_text(encoding="utf-8"))
+        assert saved["broadcaster_user_id"] == 121539855
+        assert saved["port"] == 8099
+        assert saved["path"] == "/hook"
+        assert saved["overlay"] is True
+        assert saved["events"] == ["chat.message.sent", "kicks.gifted"]
+
+        # subscribe ต้องดึงค่าจากไฟล์นี้ได้โดยไม่ต้องส่ง flag อะไรเลย
+        captured: dict = {}
+
+        def fake_api(method, url, token, payload=None):
+            captured.update(payload or {})
+            return 200, {"data": [{"id": "s1", "event": "chat.message.sent"}]}
+
+        original_api = ke.api_request
+        original_token = ke.get_access_token
+        ke.api_request = fake_api
+        ke.get_access_token = lambda a, auto_refresh=True: "tok"
+        try:
+            for argv2 in (["--config", str(cfg_file), "subscribe"],
+                          ["subscribe", "--config", str(cfg_file)]):
+                captured.clear()
+                parser2 = ke.build_parser()
+                args2 = parser2.parse_args(argv2)
+                ke.apply_prescanned(args2, argv2, [("--config", "config", str)])
+                with redirect_stdout(io.StringIO()):
+                    rc2 = ke.cmd_subscribe(args2)
+                assert rc2 == 0
+                assert captured["url"] == "https://x.trycloudflare.com/kick"
+                assert captured["broadcaster_user_id"] == 121539855
+                assert [e["name"] for e in captured["events"]] == ["chat.message.sent", "kicks.gifted"]
+        finally:
+            ke.api_request = original_api
+            ke.get_access_token = original_token
+
+
+def test_events_overlay_status_and_sse() -> None:
+    hub = ke.Hub()
+    receiver = Receiver((0, 0), verify=False, overlay=True, hub=hub)
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{receiver.port}/overlay", timeout=5) as resp:
+            html = resp.read().decode()
+        assert resp.status == 200
+        assert "EventSource" in html and "kickTest" in html
+        assert "files.kick.com/emotes" in html, "ต้องแปลง [emote:..] เป็นรูป"
+
+        with urllib.request.urlopen(f"http://127.0.0.1:{receiver.port}/status", timeout=5) as resp:
+            status = json.loads(resp.read().decode())
+        assert status["overlay_url"] == "/overlay"
+        assert status["sse_url"] == "/events"
+
+        received: list[str] = []
+        ready = threading.Event()
+
+        def listen() -> None:
+            with urllib.request.urlopen(f"http://127.0.0.1:{receiver.port}/events", timeout=15) as resp:
+                ready.set()
+                while len(received) < 2:
+                    line = resp.readline().decode("utf-8", "replace").strip()
+                    if line.startswith("data:"):
+                        received.append(line[5:].strip())
+                        if '"kind": "chat"' in received[-1] or '"kind":"chat"' in received[-1]:
+                            return
+
+        thread = threading.Thread(target=listen, daemon=True)
+        thread.start()
+        assert ready.wait(5), "SSE ต้องเริ่มสตรีมได้"
+        time.sleep(0.3)
+
+        body = json.dumps({
+            "message_id": "m1", "content": "สวัสดี",
+            "sender": {"user_id": 1, "username": "viewer", "identity": {"badges": [{"type": "sub"}]}},
+        }, ensure_ascii=False).encode()
+        receiver.post(body, {"Kick-Event-Type": "chat.message.sent"})
+        thread.join(timeout=6)
+
+        assert received, "ต้องมีข้อมูลส่งออกทาง SSE"
+        assert '"kind": "stat"' in received[0] or '"kind":"stat"' in received[0]
+        chat_items = [json.loads(item) for item in received if "chat" in item]
+        assert chat_items and chat_items[-1]["username"] == "viewer"
+        assert chat_items[-1]["kind"] == "chat"
+    finally:
+        receiver.stop()
+
+
+def test_events_overlay_disabled_returns_404() -> None:
+    receiver = Receiver((0, 0), verify=False, overlay=False, hub=None)
+    try:
+        try:
+            urllib.request.urlopen(f"http://127.0.0.1:{receiver.port}/overlay", timeout=5)
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 404
+        else:
+            raise AssertionError("เมื่อปิด overlay ต้องตอบ 404")
+        with urllib.request.urlopen(f"http://127.0.0.1:{receiver.port}/status", timeout=5) as resp:
+            status = json.loads(resp.read().decode())
+        assert status["overlay"] is False and status["overlay_url"] is None
+    finally:
+        receiver.stop()
+
+
+def test_hub_publish_unsubscribe() -> None:
+    hub = ke.Hub()
+    q1 = hub.subscribe()
+    q2 = hub.subscribe()
+    assert hub.count == 2
+    hub.publish({"kind": "chat", "content": "x"})
+    assert q1.get_nowait()["content"] == "x"
+    assert q2.get_nowait()["content"] == "x"
+    hub.unsubscribe(q1)
+    assert hub.count == 1
+    hub.publish({"kind": "chat", "content": "y"})
+    assert q1.empty() and q2.get_nowait()["content"] == "y"
+    hub.unsubscribe(q1)  # ยกเลิกซ้ำต้องไม่พัง
+    assert hub.count == 1
 
 
 if __name__ == "__main__":

@@ -158,6 +158,41 @@ cd /d "D:\HermesAI\OBS\files"
 | **`Server` / `Via` / `CF-Ray` ใน header** | มี `Via`/proxy header = มีอะไรคั่นกลาง |
 | **`--repeat 2`** | ยิงซ้ำดูว่า DNS/เส้นทางไม่คงที่ไหม (บางเน็ตสลับ IP ทุกครั้ง) |
 
+**กรณี "ใบรับรองถูก + 101 + แต่ Pusher ยังบอก not in this cluster" (เคสของคุณเมื่อ 14 ต.ค. 2026)**
+
+นี่คือผลที่ได้จริงจากเครื่องคุณ: DNS ✅ (3.21.210.251) · TCP ✅ · TLS ✅ (`pusher.com`) · WS 101 ✅ · แต่ `pusher:error` = `App key 32cbd69e... not in this cluster`
+→ ตัดสาเหตุ "proxy/hosts/DNS ถูกดัก" **ออกไปได้แล้ว** และเหลือ 2 ทาง:
+
+| ทาง | หลักฐานที่ชี้ไปทางนั้น | วิธีพิสูจน์ |
+| --- | --- | --- |
+| **Kick หมุน Pusher key** (key เก่าใช้ไม่ได้แล้ว) | หลักฐาน GitHub ที่ผมอ้างเป็นของ **13 ต.ค.** (เมื่อวาน) และ Pusher ตอบว่า key ไม่รู้จักใน cluster | ใช้ `kick_probe.html` (ข้อ 0.3) — ถ้า key อื่นในหน้าเว็บใช้ได้ = หมุน key จริง |
+| **มีอะไรตอบแทน Pusher** | ไม่น่าเป็นแล้ว เพราะใบรับรองเป็น `pusher.com` | ทดสอบจากเน็ตอื่น (มือถือ hotspot) เทียบผล |
+
+> ⚠️ สำคัญ: **Pusher กับ Kick เป็นคนละระบบกับ token/Developer Portal** — key นี้ไม่เกี่ยวกับการรีเฟรช token เลย (การรีเฟรช token ไม่มีทางแก้ error นี้ได้) และ "App key ถูกกำหนด cluster จาก Developer Portal" **ไม่จริง** — portal ไม่มีช่องให้ตั้ง Pusher key
+
+---
+
+## 0.3) `kick_probe.html` — หา cluster+key ที่ใช้ได้จริงจากเบราว์เซอร์ (ไม่ต้องมี Python)
+
+นี่คือทางที่เร็วและชัวร์ที่สุดเมื่อสงสัยว่า key ถูกหมุน — เพราะมันทดสอบ**จากเบราว์เซอร์ของคุณเอง** ผ่านทุก cluster × ทุก key
+
+1. ดาวน์โหลด <https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/57411ad/kick_probe.html> (หรือเปิดจาก GitHub → ปุ่ม Raw → Ctrl+S)
+2. **ดับเบิลคลิกไฟล์** (เปิดใน Chrome/Edge ได้เลย ไม่ต้องรันเซิร์ฟเวอร์)
+3. กด **เริ่มทดสอบ** → จะไล่ทดสอบ 11 cluster × 2 key และขึ้นผลทีละบรรทัด:
+
+```
+cluster  key          ผลลัพธ์
+us2      32cbd69e4b…  ต่อได้            socket_id=123.456.789          ← ใช้ค่านี้
+us2      34bf7a0ff4…  ผิด cluster/key    Pusher: App key … not in this cluster
+us3      32cbd69e4b…  ต่อไม่ได้          หมดเวลา: ไม่มีการตอบกลับ…
+```
+
+4. ถ้า **ไม่มีคู่ไหนใช้ได้เลย** → ทำตามข้อ 3 ในหน้าเว็บ: เปิด <https://kick.com/> → F12 → Console → วางโค้ดที่ปุ่มคัดลอกให้ → เอา URL ที่ได้ **วางกลับในหน้าเว็บ** → กด "ดึง key/cluster จากข้อความนี้ แล้วทดสอบซ้ำ" (มันจะทดสอบ key จริงที่ Kick ใช้อยู่ตอนนี้ให้ทันที)
+
+เมื่อเจอคู่ที่ใช้ได้ หน้าเว็บจะมีปุ่มให้: **คัดลอก URL** · **คัดลอกคำสั่ง Python ยืนยันซ้ำ** · **คัดลอก JSON สำหรับ config.json**
+
+---
+
 **กรณีที่พบอักขระซ่อน** ผลจะออกแบบนี้ — แก้ด้วยการพิมพ์ key ใหม่ (อย่าคัดลอกจากแชท/หน้าเว็บ):
 
 ```
@@ -577,6 +612,55 @@ cd /d "D:\HermesAI\OBS\files"
 
 > `broadcaster_user_id` หาได้จาก `kick_chat.py resolve --channel <slug>` หรือ Console: `fetch('/api/v2/channels/<slug>').then(r=>r.json()).then(d=>console.log(d.user_id))`
 
+### 6.3.5) เปิด overlay ขึ้นจอ OBS (toast ข้อความแชท)
+
+```cmd
+:: ตั้งค่าครั้งเดียว (ถามทีละข้อ แล้วบันทึกเป็นไฟล์)
+"...\python.exe" kick_events.py setup
+
+:: เปิดตัวรับ + overlay (อ่านค่าจากไฟล์ config ให้เอง)
+"...\python.exe" kick_events.py serve
+```
+
+จะได้ 3 endpoint บนเครื่องคุณ:
+
+| URL | ใช้ทำอะไร |
+| --- | --- |
+| `http://localhost:8081/kick` | webhook ที่ Kick ยิงเข้า (ต้องมี tunnel HTTPS ชี้มาที่นี่) |
+| `http://localhost:8081/overlay` | **หน้า overlay โปร่งใส** สำหรับใส่ใน OBS |
+| `http://localhost:8081/status` | ตรวจสถานะ (จำนวน event ที่รับ, ค่าที่ตั้ง, จำนวน overlay ที่ต่ออยู่) |
+
+ขั้นตอนใส่ใน OBS:
+1. `Sources` → `+` → **Browser**
+2. URL: `http://localhost:8081/overlay` · Width `480` · Height `720`
+3. ติ๊กออก: *Shutdown source when not visible* (ถ้าอยากให้รับข้อความตลอด)
+4. ข้อความจะเด้งขึ้นล่างซ้าย เก็บไว้ 12 บรรทัดล่าสุด จางหายใน 60 วินาที · อีโมตของ Kick (`[emote:ID:NAME]`) ถูกแปลงเป็นรูปให้อัตโนมัติ
+5. ทดสอบภาพโดยไม่ต้องมีคนแชทจริง: คลิกขวาที่ source → **Interact** → พิมพ์ `kickTest('ชื่อ','ข้อความ')` แล้ว Enter
+
+ตรวจว่า overlay ต่อกับ backend อยู่จริง: เปิด `http://localhost:8081/status` ดูค่า `sse_clients` (ควรเป็น 1 ต่อ 1 เบราว์เซอร์)
+
+**เช็คลิสต์เมื่อ "ไม่เห็นข้อความขึ้น overlay":**
+
+| อาการ | ตรวจ |
+| --- | --- |
+| `status` ขึ้น `received: 0` | webhook ยังไม่ถูกยิงเข้ามา — ตรวจว่า `subscribe` สำเร็จ และ tunnel ชี้ path ตรง (`/kick`) |
+| `received` เพิ่ม แต่ overlay ว่าง | เปิด `/overlay` ในเบราว์เซอร์ปกติ เปิด DevTools ดู Console ว่ามี error ไหม และดูว่า EventSource ต่อได้ (`/events`) |
+| ขึ้นข้อความแต่ไม่มีรูปอีโมต | เน็ตโหลด `files.kick.com` ไม่ได้ (มี fallback เป็นชื่ออีโมต) |
+| Kick เลิกส่ง event | ตรวจ `python kick_events.py list` — Kick ปิด webhook อัตโนมัติถ้าล้มเหลวต่อเนื่องเกิน 1 วัน |
+
+**โหมดอื่นที่ใช้บ่อย**
+
+```cmd
+:: พิมพ์ JSON ออก stdout (เอาไปต่อโปรแกรมอื่น/HermesAI ได้เลย)
+"...\python.exe" kick_events.py serve --json-lines
+
+:: ส่งต่อ raw body ไปยังโปรแกรมอื่นแบบเรียลไทม์
+"...\python.exe" kick_events.py serve --forward http://127.0.0.1:9000/chat
+
+:: ดูทุก event (ไม่ใช่แค่แชท) — ติดตาม/ซับ/KICKs ด้วย
+"...\python.exe" kick_events.py serve --all-events
+```
+
 ### 6.4) ตัวอย่าง event ที่จะได้รับ
 
 ```
@@ -637,7 +721,8 @@ cd /d "D:\HermesAI\OBS\files"
 | `kick_chat.py listen --chatroom <id> [--json]` | ฟังแชทสด (keepalive + reconnect อัตโนมัติ) |
 | `kick_chat.py send --channel <slug> --message "..."` | ส่งข้อความผ่าน API ทางการ (ต้องมี scope `chat:write`) |
 | `ws_probe.py` | **ไฟล์เดียว 0 dependency** — ตรวจ DNS/TCP/TLS(ใบรับรอง)/WS handshake/key (จับอักขระซ่อน) |
-| `kick_events.py` | Events API ทางการ: `subscribe` / `list` / `delete` / `serve` (ตรวจลายเซ็น RSA) / `verify` |
-| `tests/` | เทสต์ออฟไลน์รวม 58 เคส (Pusher server จำลอง + กุญแจ RSA ทดสอบในตัว) |
+| `kick_probe.html` | **ทดสอบในเบราว์เซอร์** — ไล่หา cluster+key ที่ใช้ได้จริง (ไม่ต้องมี Python) |
+| `kick_events.py` | Events API ทางการ: `setup` / `serve` (+overlay/SSE) / `subscribe` / `list` / `delete` / `status` / `verify` |
+| `tests/` | เทสต์ออฟไลน์รวม 63 เคส (Pusher server จำลอง + กุญแจ RSA ทดสอบในตัว + overlay/SSE) |
 
 อ้างอิง: [Kick Dev Docs](https://github.com/KickEngineering/KickDevDocs) · [Pusher Channels protocol](https://pusher.com/docs/channels/library_auth_reference/pusher-websockets-protocol/) · repos ที่อ้างในข้อ 1

@@ -566,7 +566,7 @@ def probe_once(url: str, timeout: float) -> tuple[str, str]:
 
 
 def cmd_probe(args) -> int:
-    cfg = load_config(config_path(args.config))
+    cfg = load_config(config_path(getattr(args, "config", None)))
     keys = app_keys_from(args, cfg)
     clusters = clusters_from(args, cfg)
 
@@ -682,7 +682,7 @@ def discover_from_web(slug: str | None, max_scripts: int = 6, timeout: float = 1
 
 
 def cmd_discover(args) -> int:
-    cfg = load_config(config_path(args.config))
+    cfg = load_config(config_path(getattr(args, "config", None)))
     if args.ws_url:
         cluster, key, host = parse_ws_url(args.ws_url)
         if not key:
@@ -833,7 +833,7 @@ def listen_session(ws_url: str, channels: list[str], args) -> int:
 
 
 def cmd_listen(args) -> int:
-    cfg = load_config(config_path(args.config))
+    cfg = load_config(config_path(getattr(args, "config", None)))
     keys = app_keys_from(args, cfg)
     chatroom = args.chatroom or cfg.get("chatroom_id")
 
@@ -913,7 +913,7 @@ def _oauth_module():
 
 def get_access_token(args) -> str:
     ko = _oauth_module()
-    tokens_file = Path(args.tokens).expanduser() if args.tokens else SCRIPT_DIR / "kick_tokens.json"
+    tokens_file = Path(args.tokens).expanduser() if getattr(args, "tokens", None) else SCRIPT_DIR / "kick_tokens.json"
     tokens = ko.load_tokens(tokens_file)
     if not tokens.get("access_token"):
         fail("ไม่พบ token — รัน:  python kick_oauth.py login")
@@ -950,7 +950,7 @@ def get_access_token(args) -> str:
 
 
 def cmd_send(args) -> int:
-    cfg = load_config(config_path(args.config))
+    cfg = load_config(config_path(getattr(args, "config", None)))
     broadcaster = args.broadcaster_user_id or cfg.get("broadcaster_user_id")
     if args.type == "user" and not broadcaster:
         fail("โหมด user ต้องมี broadcaster_user_id (หาได้จาก: python kick_chat.py resolve --channel <slug>)")
@@ -991,7 +991,7 @@ def cmd_send(args) -> int:
 # คำสั่ง: doctor
 # ---------------------------------------------------------------------------
 def cmd_doctor(args) -> int:
-    path = config_path(args.config)
+    path = config_path(getattr(args, "config", None))
     cfg = load_config(path)
     print("=== ตรวจสุขภาพระบบ Kick chat ===")
     print(f"      config file : {path} ({'พบ' if path.is_file() else 'ยังไม่มี'})")
@@ -1000,7 +1000,7 @@ def cmd_doctor(args) -> int:
     print(f"      chatroom_id : {cfg.get('chatroom_id') or '(ยังไม่มี)'}")
 
     ko = _oauth_module()
-    tokens_file = Path(args.tokens).expanduser() if args.tokens else SCRIPT_DIR / "kick_tokens.json"
+    tokens_file = Path(args.tokens).expanduser() if getattr(args, "tokens", None) else SCRIPT_DIR / "kick_tokens.json"
     tokens = ko.load_tokens(tokens_file)
     print(f"      token file  : {tokens_file} ({'พบ' if tokens.get('access_token') else 'ไม่พบ token'})")
     if tokens.get("scope"):
@@ -1768,7 +1768,7 @@ def cmd_report(args) -> int:
 
     add("")
     add("--- config ---")
-    path = config_path(args.config)
+    path = config_path(getattr(args, "config", None))
     add(f"ไฟล์ config  : {path} ({'พบ' if path.is_file() else 'ไม่พบ'})")
     cfg = load_config(path)
     settings = extract_pusher_settings(cfg) if cfg else {}
@@ -1780,7 +1780,7 @@ def cmd_report(args) -> int:
 
     add("")
     add("--- token (ไม่ใช้กับ Pusher — ใช้เฉพาะตอนส่งข้อความ) ---")
-    tokens_file = Path(args.tokens).expanduser() if args.tokens else SCRIPT_DIR / "kick_tokens.json"
+    tokens_file = Path(args.tokens).expanduser() if getattr(args, "tokens", None) else SCRIPT_DIR / "kick_tokens.json"
     ko = _oauth_module()
     tokens = ko.load_tokens(tokens_file)
     if tokens.get("access_token"):
@@ -1848,18 +1848,25 @@ def cmd_report(args) -> int:
 # CLI
 # ---------------------------------------------------------------------------
 def build_parser() -> argparse.ArgumentParser:
+    # default=SUPPRESS สำคัญ: กัน subparser ทับค่าที่ใส่ไว้ก่อนชื่อคำสั่ง
+    # เช่น  kick_chat.py --config my.json probe
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--config", metavar="FILE", help=f"ไฟล์ config (ค่าเริ่มต้น {CONFIG_NAME})")
-    common.add_argument("--app-key", dest="app_key", help="Pusher app key (ค่าเริ่มต้นคือ key สาธารณะของ Kick)")
-    common.add_argument("--clusters", help="ระบุ cluster ที่จะทดสอบ เช่น us2,eu")
-    common.add_argument("--timeout", type=float, default=12.0, help="หมดเวลา (วินาที) ต่อการเชื่อมต่อ 1 ครั้ง")
-    common.add_argument("--ws-url", dest="ws_url", help="ใช้ URL ที่คัดลอกมาจาก DevTools ตรง ๆ")
+    common.add_argument("--config", metavar="FILE", default=argparse.SUPPRESS,
+                        help=f"ไฟล์ config (ค่าเริ่มต้น {CONFIG_NAME})")
+    common.add_argument("--app-key", dest="app_key", default=argparse.SUPPRESS,
+                        help="Pusher app key (ค่าเริ่มต้นคือ key สาธารณะของ Kick)")
+    common.add_argument("--clusters", default=argparse.SUPPRESS, help="ระบุ cluster ที่จะทดสอบ เช่น us2,eu")
+    common.add_argument("--timeout", type=float, default=argparse.SUPPRESS,
+                        help="หมดเวลา (วินาที) ต่อการเชื่อมต่อ 1 ครั้ง (ค่าเริ่มต้น 12)")
+    common.add_argument("--ws-url", dest="ws_url", default=argparse.SUPPRESS,
+                        help="ใช้ URL ที่คัดลอกมาจาก DevTools ตรง ๆ")
 
     parser = argparse.ArgumentParser(
         prog="kick_chat.py",
         description="Kick chat (Pusher WebSocket) — วินิจฉัย cluster, ซ่อม config, ฟังแชท, ส่งข้อความ",
         parents=[common],
     )
+    parser.set_defaults(config=None, app_key=None, clusters=None, timeout=12.0, ws_url=None)
     sub = parser.add_subparsers(dest="command", metavar="{probe,discover,resolve,listen,send,doctor,fix-config,scan,extract,report}")
 
     p = sub.add_parser("probe", parents=[common], help="ทดสอบทุก cluster ว่าอันไหนใช้ได้")
@@ -1939,6 +1946,33 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def prescan_option(argv: list[str], name: str):
+    """อ่านค่าของ option จาก argv ตรง ๆ (กันข้อจำกัดของ argparse subparser ที่ทับค่าที่ใส่ไว้
+    ก่อนชื่อคำสั่ง เช่น  script.py --config A.json serve  → argparse ให้ค่า None)"""
+    for index, item in enumerate(argv):
+        if item == name:
+            if index + 1 < len(argv):
+                return argv[index + 1]
+            return None
+        if item.startswith(name + "="):
+            return item.split("=", 1)[1]
+    return None
+
+
+def apply_prescanned(args, argv: list[str], specs) -> None:
+    """specs = [(option, attribute, caster), ...] — เติมค่าให้ args ถ้ายังว่างอยู่"""
+    for option, attribute, caster in specs:
+        raw = prescan_option(argv, option)
+        if raw is None:
+            continue
+        current = getattr(args, attribute, None)
+        if current in (None, "", []):
+            try:
+                setattr(args, attribute, caster(raw))
+            except (TypeError, ValueError):
+                setattr(args, attribute, raw)
+
+
 def main(argv: list[str] | None = None) -> int:
     _fix_stdout()
     argv = list(sys.argv[1:] if argv is None else argv)
@@ -1947,6 +1981,13 @@ def main(argv: list[str] | None = None) -> int:
         argv = ["doctor"] + argv
     parser = build_parser()
     args = parser.parse_args(argv)
+    apply_prescanned(args, argv, [
+        ("--config", "config", str),
+        ("--app-key", "app_key", str),
+        ("--clusters", "clusters", str),
+        ("--timeout", "timeout", float),
+        ("--ws-url", "ws_url", str),
+    ])
     if not getattr(args, "func", None):
         parser.print_help()
         return 2
