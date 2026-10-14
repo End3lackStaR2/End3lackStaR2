@@ -7,68 +7,92 @@
 
 ---
 
-## ท่อน 0 (ไม่บังคับ) — โหลดเครื่องมือเต็ม (แบบที่ markdown ทำ URL พังไม่ได้)
+## ท่อน 0 (ไม่บังคับ) — โหลดเครื่องมือเต็ม
 
-URL ถูก **ต่อจากชิ้นส่วน** จึงไม่มี `[` `]` `(` `)` ติดมาได้ และมีตัวตรวจว่าไฟล์ที่ได้ "ครบและถูกไฟล์"
+**ทำไมท่อนนี้หน้าตาแปลก (ใช้ `Join-Path` ทุกที่)**: ไคลเอนต์แชทบางตัวแปลงข้อความอย่าง
+`$env:TEMP\ebs.zip` ให้กลายเป็นลิงก์ `[ebs.zip](http://ebs.zip)` — พอวางใน PowerShell
+จะได้ชื่อไฟล์ที่มี `:` และ `/` ซึ่ง Windows สร้างไม่ได้ (`iwr` จะล้มทันที)
+ท่อนนี้จึงสร้างพาธทุกอันด้วย `Join-Path` และต่อ URL จากชิ้นส่วน ไม่มีพาธแนว `\ชื่อ.ext` ให้ระบบแปลง
 
-ทาง A — **zip จาก codeload** (ตรวจแล้วว่าได้ไฟล์ตรงกับต้นฉบับทุกไบต์ = 69,094 ไบต์):
+### ทางที่ 0 — ดาวน์โหลดผ่านเบราว์เซอร์ (ไม่มี URL ใน PowerShell เลย = พังไม่ได้)
+
+1. เปิดหน้า PR: `github.com/End3lackStaR2/End3lackStaR2/pull/1`
+2. กดปุ่มเขียว **Code → Download ZIP**
+3. แตกไฟล์ แล้วคัดลอกโฟลเดอร์ `hermes` ไปไว้ที่ `%USERPROFILE%\hermes-kick`
+
+### ทางที่ A — codeload zip (ตรวจแล้วทุกไบต์ ตรงกับต้นฉบับ)
 
 ```powershell
 $repo = 'End3lackStaR2/End3lackStaR2'
-$sha  = '51cacf730f862ea434dcdea2db58ea7b9461af6e'
+$sha  = '61a23e019514ec925aa28996c0e366a534faae93'
+$tmp  = $env:TEMP
+$zip  = Join-Path $tmp 'ebs.zip'
+$dst  = Join-Path $tmp 'ebs'
 $d    = Join-Path $env:USERPROFILE 'hermes-kick'
+
 New-Item -ItemType Directory -Force -Path $d | Out-Null
-
-$zip = Join-Path $env:TEMP 'ebs.zip'
 iwr -UseBasicParsing ('https://' + 'codeload.' + 'github.com/' + $repo + '/zip/' + $sha) -OutFile $zip
-Expand-Archive -LiteralPath $zip -DestinationPath (Join-Path $env:TEMP 'ebs') -Force
-Copy-Item (Join-Path $env:TEMP ('ebs/End3lackStaR2-' + $sha + '/hermes/*')) $d -Recurse -Force
-Copy-Item (Join-Path $env:TEMP ('ebs/End3lackStaR2-' + $sha + '/hermes/tools')) $d -Recurse -Force
+Write-Host ('zip: ' + (Get-Item -LiteralPath $zip).Length + ' bytes')
+Expand-Archive -LiteralPath $zip -DestinationPath $dst -Force
 
-$raw = Get-Content (Join-Path $d 'hermes.ps1') -Raw
+Get-ChildItem -LiteralPath $dst -Directory | ForEach-Object {
+    $src = Join-Path $_.FullName 'hermes'
+    if (Test-Path -LiteralPath $src) { Copy-Item -Path (Join-Path $src '*') -Destination $d -Recurse -Force }
+}
+
+$h = Join-Path $d 'hermes.ps1'
+$raw = Get-Content -LiteralPath $h -Raw
 if ($raw.Length -lt 50000 -or $raw -notmatch 'hermes\.ps1 v' -or $raw -notmatch 'VERDICT') {
-    Write-Host 'ไฟล์ไม่ครบ/ผิดไฟล์ - ลองทาง B' -ForegroundColor Yellow
+    Write-Host 'ไฟล์ไม่ครบ - ใช้ทางที่ 0 หรือ ทาง B' -ForegroundColor Yellow
 } else {
-    Write-Host ('พร้อมใช้: ' + (Join-Path $d 'hermes.ps1') + '  (' + (Get-Item (Join-Path $d 'hermes.ps1')).Length + ' bytes)') -ForegroundColor Green
+    Get-ChildItem -LiteralPath $d | Select-Object Name, Length
+    Write-Host ('พร้อมใช้: ' + $h + '  (' + (Get-Item -LiteralPath $h).Length + ' bytes)') -ForegroundColor Green
 }
 ```
 
-ทาง B — ถ้า codeload ถูกบล็อก ใช้ **GitHub API** (คืนไฟล์เป็น base64, ตรวจแล้วว่าตรงกันทุกไบต์):
+### ทางที่ B — git clone (ถ้ามี git; ทางนี้วางแล้วปลอดภัยที่สุด)
+
+```powershell
+$d = Join-Path $env:USERPROFILE 'hermes-kick'
+git clone --depth 1 'https://github.com/End3lackStaR2/End3lackStaR2.git' $d
+$h = Join-Path (Join-Path $d 'hermes') 'hermes.ps1'
+Get-ChildItem -LiteralPath $h | Select-Object Name, Length
+```
+
+### ทางที่ C — GitHub API (ถ้า codeload ถูกบล็อก)
 
 ```powershell
 $repo = 'End3lackStaR2/End3lackStaR2'
-$sha  = '51cacf730f862ea434dcdea2db58ea7b9461af6e'
+$sha  = '61a23e019514ec925aa28996c0e366a534faae93'
 $d    = Join-Path $env:USERPROFILE 'hermes-kick'
 New-Item -ItemType Directory -Force -Path $d | Out-Null
-foreach ($f in @('hermes.ps1', 'tools/patch_kick_app.py', 'tools/kick_pusher_probe.py', 'tools/test_patch_kick_app.py')) {
+New-Item -ItemType Directory -Force -Path (Join-Path $d 'tools') | Out-Null
+
+foreach ($f in @('hermes.ps1', 'report-evidence.ps1')) {
     $api  = 'https://' + 'api.' + 'github.com/repos/' + $repo + '/contents/hermes/' + $f + '?ref=' + $sha
     $json = (iwr -UseBasicParsing $api).Content | ConvertFrom-Json
-    $dest = Join-Path $d ($f -replace '/', '\')
-    New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
-    [IO.File]::WriteAllBytes($dest, [Convert]::FromBase64String($json.content))
-    Write-Host ("wrote {0} ({1} bytes)" -f $dest, (Get-Item $dest).Length)
+    $out  = Join-Path $d $f
+    [IO.File]::WriteAllBytes($out, [Convert]::FromBase64String($json.content))
+    Write-Host ('wrote ' + $out + ' (' + (Get-Item -LiteralPath $out).Length + ' bytes)')
 }
 ```
 
-ทาง C — วิธีปกติ (ใช้ได้บนเน็ตบ้านทั่วไป แต่ proxied/องค์กรอาจบล็อก):
+### ตรวจ + รัน (ใช้ได้กับทุกทางข้างบน)
 
 ```powershell
-$base = 'github.com/End3lackStaR2/End3lackStaR2/raw/' + '51cacf730f862ea434dcdea2db58ea7b9461af6e' + '/hermes'
-iwr -UseBasicParsing ('https://' + $base + '/hermes.ps1') -OutFile (Join-Path $env:USERPROFILE 'hermes-kick\hermes.ps1')
-```
+$d = Join-Path $env:USERPROFILE 'hermes-kick'
+$h = Join-Path $d 'hermes.ps1'
+if (-not (Test-Path -LiteralPath $h)) { $h = Join-Path (Join-Path $d 'hermes') 'hermes.ps1' }
+Write-Host ('ใช้: ' + $h + ' (' + (Get-Item -LiteralPath $h).Length + ' bytes)')
 
-จากนั้นใช้คำสั่งนี้ (ไม่มีการพิมพ์ URL ซ้ำอีก):
-
-```powershell
-$h = Join-Path $env:USERPROFILE 'hermes-kick\hermes.ps1'
 powershell -NoProfile -ExecutionPolicy Bypass -File $h doctor
 powershell -NoProfile -ExecutionPolicy Bypass -File $h fix -WaitSeconds 90 -Open
 ```
 
 > ตรวจสอบจากฝั่งผู้พัฒนา (sandbox ที่เข้าได้เฉพาะ github.com / codeload / api.github.com):
-> ทาง A และทาง B ให้ไฟล์ไบต์ตรงกันเป๊ะกับต้นฉบับ (69,094 ไบต์, BOM ถูกต้อง, มี `RESULT_JSON` และตัวสแกนไฟล์)
-> ส่วนทาง C (ผ่าน `github.com/.../raw/...`) เป็น 302 ไป `raw.githubusercontent.com` ซึ่งเครือข่ายของผมเข้าไม่ถึง
-> จึง **ยืนยันจากฝั่งผมไม่ได้** แต่บนเครื่องบ้านทั่วไปใช้ได้ — ถ้าไม่ได้ให้ใช้ทาง A หรือ B
+> ทาง A และทาง C ให้ไฟล์ไบต์ตรงกันเป๊ะกับต้นฉบับ (69,094 ไบต์, BOM ถูกต้อง, มี `RESULT_JSON`)
+> ส่วน `github.com/.../raw/...` (ที่บทสนทนาก่อนหน้าใช้) เป็น 302 ไป `raw.githubusercontent.com`
+> ซึ่งเครือข่ายของผมเข้าไม่ถึง จึงยืนยันไม่ได้ — เลี่ยงไปใช้ทาง A/B/C หรือทางที่ 0
 
 ---
 
@@ -106,10 +130,13 @@ try {
 ## ท่อน 2 — แก้ config.json (สำรองอัตโนมัติก่อนเขียน)
 
 ```powershell
-$cfg = 'D:\HermesAI\OBS\files\config.json'
-if (-not (Test-Path -LiteralPath $cfg)) { $cfg = 'D:\HermesAI\OBS\config.json' }
-Write-Host "config: $cfg"
-Copy-Item -LiteralPath $cfg -Destination "$cfg.bak-$(Get-Date -f yyyyMMdd-HHmmss)" -Force
+$app  = 'D:\HermesAI\OBS'                                  # โฟลเดอร์แอป (ไม่มีจุด = ไม่โดนแปลงเป็นลิงก์)
+$cand = @((Join-Path (Join-Path $app 'files') 'config.json'), (Join-Path $app 'config.json'))
+$cfg  = $cand | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $cfg) { throw 'ไม่พบ config.json - ระบุพาธเองในบรรทัด $cfg' }
+Write-Host ('config: ' + $cfg)
+
+Copy-Item -LiteralPath $cfg -Destination ($cfg + '.bak-' + (Get-Date -f yyyyMMdd-HHmmss)) -Force
 $old = [IO.File]::ReadAllText($cfg)
 $new = $old.Replace('32cbd69e4b950bf97679', '34bf7a0ff419a2a775b9')
 if ($new -eq $old) { Write-Host 'ไม่มี key เก่าในไฟล์นี้ (อาจแก้ไปแล้ว)' -ForegroundColor Yellow }
@@ -137,15 +164,19 @@ Get-CimInstance Win32_Process -Filter "Name like 'py%'" |
 ## ท่อน 4 — รันใหม่ + ดู **เฉพาะ log ที่ใหม่กว่าตอนนี้** (หัวใจของการแก้ปัญหานี้)
 
 ```powershell
-$log = 'D:\HermesAI\OBS\files\kick_notifier.log'
+$app = 'D:\HermesAI\OBS'
+$fld = Join-Path $app 'files'
+$log = Join-Path $fld 'kick_notifier.log'
 $off = if (Test-Path -LiteralPath $log) { (Get-Item -LiteralPath $log).Length } else { 0 }
-Write-Host "log offset = $off bytes (จะนับเฉพาะที่เพิ่มหลังจากนี้)" -ForegroundColor Cyan
+Write-Host ('log offset = ' + $off + ' bytes (จะนับเฉพาะที่เพิ่มหลังจากนี้)') -ForegroundColor Cyan
 
-# >>> แทนบรรทัดนี้ด้วยคำสั่งรันของจริง (คำสั่งเดิมของแอป) <<<
-# Start-Process -FilePath 'D:\HermesAI\.venv\Scripts\python.exe' `
-#   -ArgumentList '"D:\HermesAI\OBS\main.py"' -WorkingDirectory 'D:\HermesAI\OBS' `
-#   -RedirectStandardOutput 'D:\HermesAI\OBS\files\manual_stdout.log' `
-#   -RedirectStandardError  'D:\HermesAI\OBS\files\manual_stderr.log'
+# >>> แทนท่อนนี้ด้วยคำสั่งรันจริงของแอป (ใช้คำสั่งเดิมที่เคยรัน) <<<
+# $py  = Join-Path $env:USERPROFILE '.venv'           # แก้ให้ตรงกับ python ของคุณ
+# $exe = Join-Path (Join-Path $py 'Scripts') 'python.exe'
+# $scr = Join-Path $app 'main.py'
+# Start-Process -FilePath $exe -ArgumentList ('"' + $scr + '"') -WorkingDirectory $app `
+#   -RedirectStandardOutput (Join-Path $fld 'manual_stdout.log') `
+#   -RedirectStandardError  (Join-Path $fld 'manual_stderr.log')
 
 Start-Sleep -Seconds 20
 
@@ -177,7 +208,7 @@ Write-Host ("RESULT_JSON " + (@{ verdict = $v; log_path = $log; new_lines = $lin
 
 > ถ้าโหลดเครื่องมือเต็มได้แล้ว (ท่อน 0) ใช้ตัวช่วยที่ฉลาดกว่า — มันปิดข้อมูลลับให้เองและรวมทุกอย่างในไฟล์เดียว:
 > ```powershell
-> $h = Join-Path $env:USERPROFILE 'hermes-kick\report-evidence.ps1'
+> $h = Join-Path (Join-Path $env:USERPROFILE 'hermes-kick') 'report-evidence.ps1'
 > powershell -NoProfile -ExecutionPolicy Bypass -File $h -AppDir 'D:\HermesAI\OBS' -Zip -Open
 > ```
 > หรือส่งขึ้น GitHub ตรง ๆ (ใช้ credential ของ git ที่มีอยู่ ไม่ต้องวาง token ในแชท):
@@ -186,19 +217,24 @@ Write-Host ("RESULT_JSON " + (@{ verdict = $v; log_path = $log; new_lines = $lin
 > ```
 
 ```powershell
-$app = 'D:\HermesAI\OBS'
-$out = "$env:USERPROFILE\Desktop\hermes-evidence.txt"
+$app  = 'D:\HermesAI\OBS'
+$fld  = Join-Path $app 'files'
+$desk = [Environment]::GetFolderPath('Desktop')
+$out  = Join-Path $desk ('hermes-evidence-' + (Get-Date -f yyyyMMdd-HHmmss) + '.txt')
+
 $body = @()
 $body += '### RESULT (จากท่อน 4)'
-$body += 'VERDICT: ' + (Read-Host 'วางค่า VERDICT จากท่อน 4 (หรือกด Enter เพื่อข้าม)')
-foreach ($f in @("$app\files\kick_notifier.log", "$app\files\manual_stdout.log", "$app\files\manual_stderr.log")) {
+$body += 'VERDICT: ' + (Read-Host 'วางค่า VERDICT จากท่อน 4 แล้วกด Enter')
+$body += '### key probe (ท่อน 1)'
+$body += 'ผล: ' + (Read-Host 'KEY-OK / KEY-REJECTED / NO-ANSWER')
+
+foreach ($name in @('kick_notifier.log', 'manual_stdout.log', 'manual_stderr.log')) {
+    $f = Join-Path $fld $name
     if (Test-Path -LiteralPath $f) {
-        $body += "### $f (ท้าย 20 บรรทัด)"
-        $body += Get-Content -LiteralPath $f -Tail 20
+        $body += ('### ' + $f + '  (bytes=' + (Get-Item -LiteralPath $f).Length + ', last_write=' + (Get-Item -LiteralPath $f).LastWriteTime + ')')
+        $body += (Get-Content -LiteralPath $f -Tail 20)
     }
 }
-$body += '### key probe (ท่อน 1)'
-$body += 'KEY-OK / KEY-REJECTED / NO-ANSWER: ' + (Read-Host 'ผลจากท่อน 1')
 $body | Set-Content -LiteralPath $out -Encoding UTF8
 notepad $out
 ```
