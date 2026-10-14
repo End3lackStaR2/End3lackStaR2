@@ -1,0 +1,18 @@
+# python
+__pycache__/
+*.py[cod]
+
+# local run artifacts (never commit live keys, logs, reports or backups)
+kick_pusher.json
+hermes.paths.json
+hermes.launch.txt
+*.log
+*.bak-*
+hermes_report*.json
+hermes_report*.txt
+
+# virtualenvs / editors
+.venv/
+venv/
+.vscode/
+.idea/
