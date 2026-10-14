@@ -10,7 +10,7 @@
 
 **วิธี A: PowerShell (วางทีเดียวจบ)**
 ```powershell
-$base = "https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/c239726"
+$base = "https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2"
 $dst  = "D:\HermesAI\OBS\files"
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
 New-Item -ItemType Directory -Force -Path "$dst\tests" | Out-Null
@@ -27,17 +27,20 @@ foreach ($f in "run_all.py","test_kick_probe_html.js","test_overlay_html.js") {
 **วิธี B: curl (มีมาใน Windows 10/11 อยู่แล้ว)**
 ```cmd
 cd /d "D:\HermesAI\OBS\files"
-curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/c239726/ws_probe.py
-curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/c239726/kick_chat.py
-curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/c239726/kick_probe.html
+curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/ws_probe.py
+curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/kick_chat.py
+curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/kick_probe.html
 mkdir tests
-curl -O --output-dir tests https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/c239726/tests/run_all.py
+curl -O --output-dir tests https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/tests/run_all.py
 ```
 
 **วิธี C: เปิดในเบราว์เซอร์แล้ว Ctrl+S**
 <https://github.com/End3lackStaR2/End3lackStaR2/blob/arena/2a41429a-end3lackstar2/ws_probe.py> → กดปุ่ม **Raw** → **Ctrl+S** → เลือกโฟลเดอร์ `D:\HermesAI\OBS\files`
 
-> ลิงก์แบบใช้ commit `c239726` จะไม่เปลี่ยนตามเวลา (คงที่) ถ้าโหลดแล้วอยากตรวจว่าไฟล์ครบ ให้รัน `python ws_probe.py --help` ต้องขึ้นข้อความ help ไม่ใช่ error
+> ลิงก์ด้านบนชี้ไปที่ **branch `arena/2a41429a-end3lackstar2`** จึงได้ไฟล์เวอร์ชันล่าสุดเสมอ ถ้าต้องการสำเนาที่ตรึงตายตัว
+> (เนื้อหาเดียวกัน ณ วันนี้) ใช้ `c239726` แทนชื่อ branch ได้เลย
+> โหลดแล้วตรวจว่าไฟล์ครบ: รัน `python ws_probe.py --help` ต้องขึ้นข้อความ help ไม่ใช่ error
+> และรัน `python tests\run_all.py` ต้องขึ้น `ผ่าน 5/5 ชุด` (หรือ `3/5 · ข้าม 2` ถ้าไม่มี Node.js)
 
 **ไฟล์ไหนใช้ทำอะไร**
 
@@ -185,7 +188,7 @@ cd /d "D:\HermesAI\OBS\files"
 
 นี่คือทางที่เร็วและชัวร์ที่สุดเมื่อสงสัยว่า key ถูกหมุน — เพราะมันทดสอบ**จากเบราว์เซอร์ของคุณเอง** ผ่านทุก cluster × ทุก key
 
-1. ดาวน์โหลด <https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/c239726/kick_probe.html> (หรือเปิดจาก GitHub → ปุ่ม Raw → Ctrl+S)
+1. ดาวน์โหลด <https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/arena/2a41429a-end3lackstar2/kick_probe.html> (หรือเปิดจาก GitHub → ปุ่ม Raw → Ctrl+S)
 2. **ดับเบิลคลิกไฟล์** (เปิดใน Chrome/Edge ได้เลย ไม่ต้องรันเซิร์ฟเวอร์)
 3. กด **เริ่มทดสอบ** → จะไล่ทดสอบ 11 cluster × 2 key และขึ้นผลทีละบรรทัด:
 
