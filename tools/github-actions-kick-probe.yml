@@ -1,0 +1,53 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# ไฟล์นี้เป็น "template" ของ GitHub Actions workflow
+#
+# ทำไมต้องเป็น template: token ที่ใช้ push อัตโนมัติไม่มีสิทธิ์ workflow จึงสร้าง
+# ไฟล์ใน .github/workflows/ ให้ไม่ได้ — ต้องก๊อปเองครั้งเดียว (30 วินาที)
+#
+# วิธีใช้ (ทำผ่านเบราว์เซอร์ได้เลย ไม่ต้องมี token):
+#   1. เปิด https://github.com/End3lackStaR2/End3lackStaR2/new/arena/2a41429a-end3lackstar2
+#   2. ตั้งชื่อไฟล์:  .github/workflows/kick-probe.yml
+#   3. วางเนื้อหาด้านล่างนี้ทั้งหมด → Commit changes
+#   4. ไปที่แท็บ Actions → เลือก "kick-pusher-probe" → Run workflow
+#   5. อ่านผลในหน้าสรุปของ run (จะมีตาราง cluster/key และไฟล์ sweep_result.json ให้โหลด)
+#
+# ได้อะไร: ยิงทดสอบจากเครือข่ายของ GitHub (คนละทางกับเครื่องคุณและคนละทางกับ sandbox)
+# ถ้าที่นั่นต่อได้ = ปัญหาอยู่ที่เครื่อง/เน็ตคุณ · ถ้าที่นั่นก็ไม่ได้ = ปัญหาอยู่ที่ key/c่าที่ตั้ง
+# ─────────────────────────────────────────────────────────────────────────────
+name: kick-pusher-probe
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/kick-probe.yml"
+      - "tools/pusher_sweep.py"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ตั้งค่า Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: ถาม Kick ว่าให้ใช้ Pusher app ไหน
+        run: python ws_probe.py --discover --timeout 8 || true
+
+      - name: ทดสอบทุก cluster × ทุก key
+        run: python tools/pusher_sweep.py --discover --check-kick --json sweep_result.json --timeout 6
+
+      - name: แนบผลลัพธ์
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweep-result
+          path: sweep_result.json
+          if-no-files-found: ignore
