@@ -6,6 +6,9 @@ kick_credentials.env
 .kick_credentials.json
 credentials.json
 kick_tokens.json
+kick_chat_config.json
+chat.ndjson
+*.log
 *tokens*.json
 !tests/fixtures/*tokens*.json
 
