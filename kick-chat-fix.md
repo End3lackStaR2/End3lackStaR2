@@ -10,7 +10,7 @@
 
 **วิธี A: PowerShell (วางทีเดียวจบ)**
 ```powershell
-$base = "https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/a51d1f2"
+$base = "https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/57411ad"
 $dst  = "D:\HermesAI\OBS\files"
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
 foreach ($f in "ws_probe.py","kick_chat.py","kick_oauth.py","kick_events.py") {
@@ -22,14 +22,14 @@ foreach ($f in "ws_probe.py","kick_chat.py","kick_oauth.py","kick_events.py") {
 **วิธี B: curl (มีมาใน Windows 10/11 อยู่แล้ว)**
 ```cmd
 cd /d "D:\HermesAI\OBS\files"
-curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/a51d1f2/ws_probe.py
-curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/a51d1f2/kick_chat.py
+curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/57411ad/ws_probe.py
+curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/57411ad/kick_chat.py
 ```
 
 **วิธี C: เปิดในเบราว์เซอร์แล้ว Ctrl+S**
 <https://github.com/End3lackStaR2/End3lackStaR2/blob/arena/2a41429a-end3lackstar2/ws_probe.py> → กดปุ่ม **Raw** → **Ctrl+S** → เลือกโฟลเดอร์ `D:\HermesAI\OBS\files`
 
-> ลิงก์แบบใช้ commit `a51d1f2` จะไม่เปลี่ยนตามเวลา (คงที่) ถ้าโหลดแล้วอยากตรวจว่าไฟล์ครบ ให้รัน `python ws_probe.py --help` ต้องขึ้นข้อความ help ไม่ใช่ error
+> ลิงก์แบบใช้ commit `57411ad` จะไม่เปลี่ยนตามเวลา (คงที่) ถ้าโหลดแล้วอยากตรวจว่าไฟล์ครบ ให้รัน `python ws_probe.py --help` ต้องขึ้นข้อความ help ไม่ใช่ error
 
 **ไฟล์ไหนใช้ทำอะไร**
 
