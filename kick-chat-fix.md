@@ -10,32 +10,41 @@
 
 **วิธี A: PowerShell (วางทีเดียวจบ)**
 ```powershell
-$base = "https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/57411ad"
+$base = "https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/c239726"
 $dst  = "D:\HermesAI\OBS\files"
 New-Item -ItemType Directory -Force -Path $dst | Out-Null
-foreach ($f in "ws_probe.py","kick_chat.py","kick_oauth.py","kick_events.py") {
+New-Item -ItemType Directory -Force -Path "$dst\tests" | Out-Null
+foreach ($f in "ws_probe.py","kick_chat.py","kick_oauth.py","kick_events.py","kick_probe.html","README.md","kick-chat-fix.md") {
   Invoke-WebRequest "$base/$f" -OutFile (Join-Path $dst $f)
   Write-Host "โหลดแล้ว: $f"
+}
+foreach ($f in "run_all.py","test_kick_probe_html.js","test_overlay_html.js") {
+  Invoke-WebRequest "$base/tests/$f" -OutFile (Join-Path $dst "tests\$f")
+  Write-Host "โหลดแล้ว: tests/$f"
 }
 ```
 
 **วิธี B: curl (มีมาใน Windows 10/11 อยู่แล้ว)**
 ```cmd
 cd /d "D:\HermesAI\OBS\files"
-curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/57411ad/ws_probe.py
-curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/57411ad/kick_chat.py
+curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/c239726/ws_probe.py
+curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/c239726/kick_chat.py
+curl -O https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/c239726/kick_probe.html
+mkdir tests
+curl -O --output-dir tests https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/c239726/tests/run_all.py
 ```
 
 **วิธี C: เปิดในเบราว์เซอร์แล้ว Ctrl+S**
 <https://github.com/End3lackStaR2/End3lackStaR2/blob/arena/2a41429a-end3lackstar2/ws_probe.py> → กดปุ่ม **Raw** → **Ctrl+S** → เลือกโฟลเดอร์ `D:\HermesAI\OBS\files`
 
-> ลิงก์แบบใช้ commit `57411ad` จะไม่เปลี่ยนตามเวลา (คงที่) ถ้าโหลดแล้วอยากตรวจว่าไฟล์ครบ ให้รัน `python ws_probe.py --help` ต้องขึ้นข้อความ help ไม่ใช่ error
+> ลิงก์แบบใช้ commit `c239726` จะไม่เปลี่ยนตามเวลา (คงที่) ถ้าโหลดแล้วอยากตรวจว่าไฟล์ครบ ให้รัน `python ws_probe.py --help` ต้องขึ้นข้อความ help ไม่ใช่ error
 
 **ไฟล์ไหนใช้ทำอะไร**
 
 | ไฟล์ | ใช้เมื่อ |
 | --- | --- |
-| `ws_probe.py` | **เริ่มจากตัวนี้** — ไฟล์เดียวจบ บอกได้ทันทีว่าปัญหาอยู่ที่ "เส้นทาง" หรือ "key/โค้ด" |
+| `kick_probe.html` | **เร็วที่สุด** — ดับเบิลคลิกเปิดในเบราว์เซอร์ ไล่หา cluster+key ที่ Pusher ยอมรับจริง (ดูข้อ 0.3) |
+| `ws_probe.py` | ไฟล์เดียวจบ บอกได้ทันทีว่าปัญหาอยู่ที่ "เส้นทาง" หรือ "key/โค้ด" |
 | `kick_chat.py` | วินิจฉัย/ซ่อม config ที่ซับซ้อน (`report`, `fix-config`, `scan`, `extract`) + ฟัง/ส่งแชท |
 | `kick_oauth.py` | รับ/รีเฟรช token (ใช้เฉพาะตอน *ส่ง* ข้อความ) |
 | `kick_events.py` | ทางเลือกทางการด้วย webhook แทน Pusher (ดูข้อ 9) |
@@ -176,7 +185,7 @@ cd /d "D:\HermesAI\OBS\files"
 
 นี่คือทางที่เร็วและชัวร์ที่สุดเมื่อสงสัยว่า key ถูกหมุน — เพราะมันทดสอบ**จากเบราว์เซอร์ของคุณเอง** ผ่านทุก cluster × ทุก key
 
-1. ดาวน์โหลด <https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/57411ad/kick_probe.html> (หรือเปิดจาก GitHub → ปุ่ม Raw → Ctrl+S)
+1. ดาวน์โหลด <https://raw.githubusercontent.com/End3lackStaR2/End3lackStaR2/c239726/kick_probe.html> (หรือเปิดจาก GitHub → ปุ่ม Raw → Ctrl+S)
 2. **ดับเบิลคลิกไฟล์** (เปิดใน Chrome/Edge ได้เลย ไม่ต้องรันเซิร์ฟเวอร์)
 3. กด **เริ่มทดสอบ** → จะไล่ทดสอบ 11 cluster × 2 key และขึ้นผลทีละบรรทัด:
 
