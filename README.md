@@ -14,6 +14,36 @@ HermesAI OBS Kick notifier (`D:\HermesAI\OBS`).
 | `hermes/tools/test_patch_kick_app.py` | 10 unit tests that import the patched code and assert the key really rotates. |
 | `hermes/README.md` | Thai quick start, all modes, troubleshooting. |
 | `hermes/HERMES-BRIEF-TH.md` | Thai work order + acceptance criteria for an agent (no "wait 10-15 seconds" hand-waving). |
+| `bus/` | Friday ⟷ Arena task bus over this repo (see above). |
+
+## Friday ⟷ Arena bus (`bus/`)
+
+Arena cannot reach your machine (no MCP connector, no inbound access) and only runs when you
+message it. So the repo itself became the mailbox, and Friday (on your PC) pulls from it:
+
+```
+you: "Arena, ask Friday to X"          you: "Arena, check the bus"
+        │                                        ▲
+        ▼                                        │
+  Arena writes bus/queue/T-*.json        Arena reads bus/results/*.json
+        │                                        │
+        ▼                                        │
+  Friday: claim -> run an allowlisted action -> write result -> push
+```
+
+| File | Purpose |
+| --- | --- |
+| `bus/PROTOCOL.md` | The contract: task/result/request/answer schemas, claim leases, safety rules |
+| `bus/ARENA-WORKFLOW.md` | What Arena will and will not do, and the exact phrases that make it act |
+| `bus/friday_bus.py` | The client (python + git, stdlib only): `init`, `once`, `loop`, `status`, `list`, `submit`, `ask`, `selftest` |
+| `bus/actions.json.example` | Your local whitelist - **the security boundary** (Friday runs nothing else) |
+| `bus/tests/test_bus_e2e.py` | 12 end-to-end tests over a real git remote (claim races, stale leases, injection, timeouts) |
+
+```powershell
+python friday_bus.py init --dir D:\hermes-bus     # once
+python friday_bus.py status                        # heartbeat so Arena can see you
+python friday_bus.py loop                          # keep working through the queue
+```
 
 ## Why
 

@@ -105,6 +105,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$d\report-evidence.ps1" -Ap
 > ไม่มีให้เลือก (ตรวจแล้วได้สถานะ `unsupported`) — ถ้าคุณเพิ่ม MCP server ของตัวเองใน UI สำเร็จ
 > บอกชื่อ slug มา แล้วโหลด tools ของมันได้ในเทิร์นถัดไป
 
+## ให้ Friday ทำงานร่วมกับ Arena (bus)
+
+ถ้าคุณต้องการให้ agent บนเครื่อง (Friday) รับงานจาก Arena แล้วส่งผลกลับ โดยไม่ต้องเปิดพอร์ต/MCP:
+ใช้ `bus/` — อ่าน `bus/README` ของ bus ใน `bus/PROTOCOL.md` + `bus/ARENA-WORKFLOW.md`
+
+```powershell
+# ฝั่งเครื่องคุณ (ครั้งเดียว) - ค้นไฟล์เองเพื่อเลี่ยงพาธที่มีจุด (กันแชทแปลงเป็นลิงก์)
+$bus = Join-Path (Join-Path $env:USERPROFILE 'hermes-bus') 'bus'
+$f   = Get-ChildItem -LiteralPath $bus -Filter 'friday_*.py' | Select-Object -First 1
+python $f.FullName init --dir (Split-Path -Parent $bus)
+# จากนั้น: status เพื่อให้ Arena เห็น / once สำหรับทำ 1 งาน / loop สำหรับเฝ้าคิว
+```
+
+งานที่ Arena ส่งมาจะรันได้เฉพาะ action ใน `bus/actions.json` ของคุณ (มีตัวอย่างพร้อม action
+ของชุดเครื่องมือนี้อยู่แล้ว: `hermes_doctor`, `hermes_fix`, `kick_probe`, `collect_evidence`, `push_evidence`, `log_tail`)
+
 ## ทางเลือกที่ไม่ต้องโหลดอะไรเลย
 
 ถ้าดาวน์โหลดจาก GitHub ไม่ได้ หรือข้อความที่คัดลอกโดน markdown ทำ URL พัง ให้ใช้

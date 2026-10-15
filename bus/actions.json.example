@@ -1,0 +1,93 @@
+{
+  "schema": "friday.actions/v1",
+  "_readme": [
+    "THIS FILE IS THE SECURITY BOUNDARY. Friday only runs actions listed here.",
+    "That is deliberate: a task file in bus/queue comes from the repo, so it is untrusted input.",
+    "Copy this file to bus/actions.json (init does it for you) and edit the paths for your machine.",
+    "bus/actions.json is gitignored - it must never be committed.",
+    "Placeholders: {repo_dir} {bus_dir} {default_app_dir} {hermes_dir} plus any declared param.",
+    "Every param value is validated: default rule allows only letters, digits, _ . - \\ / : and space",
+    "(no quotes, no ; | & $ ` ), unless the action declares its own \"pattern\"."
+  ],
+  "actions": {
+    "hermes_doctor": {
+      "description": "read-only diagnosis of the notifier (paths, keys, log, process)",
+      "program": "powershell",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{hermes_dir}/hermes.ps1", "doctor"],
+      "cwd": "{hermes_dir}",
+      "timeout_seconds": 180,
+      "params": {}
+    },
+    "hermes_fix": {
+      "description": "repair + restart the notifier + wait for fresh evidence",
+      "program": "powershell",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{hermes_dir}/hermes.ps1", "fix",
+               "-WaitSeconds", "90", "-InstallDir", "{app_dir}"],
+      "cwd": "{hermes_dir}",
+      "timeout_seconds": 600,
+      "params": {
+        "app_dir": { "required": false, "default": "D:\\HermesAI\\OBS" }
+      }
+    },
+    "hermes_verify": {
+      "description": "probe both Pusher keys + analyse the current log, change nothing",
+      "program": "powershell",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{hermes_dir}/hermes.ps1", "verify"],
+      "cwd": "{hermes_dir}",
+      "timeout_seconds": 180,
+      "params": {}
+    },
+    "kick_probe": {
+      "description": "live Pusher key probe, JSON output",
+      "program": "python",
+      "args": ["{hermes_dir}/kick_pusher_probe.py", "--json"],
+      "cwd": "{hermes_dir}",
+      "timeout_seconds": 90,
+      "params": {}
+    },
+    "collect_evidence": {
+      "description": "pack the whole situation into one report file (+ zip)",
+      "program": "powershell",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{hermes_dir}/report-evidence.ps1",
+               "-AppDir", "{app_dir}", "-Zip"],
+      "cwd": "{hermes_dir}",
+      "timeout_seconds": 300,
+      "params": {
+        "app_dir": { "required": false, "default": "D:\\HermesAI\\OBS" }
+      }
+    },
+    "push_evidence": {
+      "description": "collect the evidence and push it to this repo (branch hermes-evidence)",
+      "program": "powershell",
+      "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "{hermes_dir}/report-evidence.ps1",
+               "-AppDir", "{app_dir}", "-Repo", "End3lackStaR2/End3lackStaR2"],
+      "cwd": "{hermes_dir}",
+      "timeout_seconds": 300,
+      "params": {
+        "app_dir": { "required": false, "default": "D:\\HermesAI\\OBS" }
+      }
+    },
+    "log_tail": {
+      "description": "tail the notifier log (line count is pattern-limited to 1-4 digits)",
+      "program": "powershell",
+      "args": ["-NoProfile", "-Command",
+               "Get-Content -LiteralPath '{log_path}' -Tail {lines}"],
+      "cwd": "{default_app_dir}",
+      "timeout_seconds": 60,
+      "params": {
+        "lines": { "required": true, "pattern": "^[0-9]{1,4}$" },
+        "log_path": { "required": false, "default": "D:\\HermesAI\\OBS\\files\\kick_notifier.log" }
+      }
+    },
+    "python_check": {
+      "description": "syntax-check one python file (path is pattern-limited to .py files)",
+      "program": "python",
+      "args": ["-m", "py_compile", "{file}"],
+      "cwd": "{default_app_dir}",
+      "timeout_seconds": 120,
+      "params": {
+        "file": { "required": true, "pattern": "^[A-Za-z0-9_:\\\\/. -]+\\.py$" }
+      }
+    }
+  }
+}

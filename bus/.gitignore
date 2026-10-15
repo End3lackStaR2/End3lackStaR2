@@ -1,0 +1,6 @@
+# local-only files: your actions whitelist, your config, and run outputs
+actions.json
+bus.config.json
+.local/
+*.out.txt
+*.err.txt
