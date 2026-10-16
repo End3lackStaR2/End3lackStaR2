@@ -10,6 +10,14 @@
     "(no quotes, no ; | & $ ` ), unless the action declares its own \"pattern\"."
   ],
   "actions": {
+    "bus_selftest": {
+      "description": "prove Friday itself is healthy (no HermesAI paths needed) - good first task",
+      "program": "python",
+      "args": ["{repo_dir}/bus/friday_bus.py", "--dir", "{repo_dir}", "selftest"],
+      "cwd": "{repo_dir}",
+      "timeout_seconds": 120,
+      "params": {}
+    },
     "hermes_doctor": {
       "description": "read-only diagnosis of the notifier (paths, keys, log, process)",
       "program": "powershell",
