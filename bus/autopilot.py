@@ -173,8 +173,13 @@ def evaluate(result: dict, accept: dict) -> tuple:
 # --------------------------------------------------------------------------- engine
 
 class Autopilot:
-    def __init__(self, bus: fb.Bus, policy: dict, dry_run: bool = False, quiet: bool = False):
+    def __init__(self, bus: fb.Bus, policy: dict, dry_run: bool = False, quiet: bool = False,
+                 arena: dict | None = None):
         self.bus = bus
+        # Optional live channel to Arena through bus/../bridge (a browser tab).
+        # Off by default: blocking a run on a browser is a decision, not a default.
+        self.arena = arena or {}
+        self.arena_answers: dict[str, str] = {}
         self.policy = policy
         self.dry_run = dry_run
         self.quiet = quiet
@@ -274,6 +279,8 @@ class Autopilot:
             log(f"  dry-run: would ask Arena (would write {question_id})", self.quiet)
             return question_id
         path = self.bus.path("requests", f"{question_id}.json")
+        question_text = (f"[autopilot] {workflow}/{step}: {reasons[0] if reasons else 'step failed'}"
+                         " - what should Friday do next?")
         fb.save_json(path, {
             "schema": fb.SCHEMA_REQUEST,
             "id": question_id,
@@ -281,11 +288,56 @@ class Autopilot:
             "created_by": "friday-autopilot",
             "host": self.bus.cfg.get("host"),
             "kind": kind,
-            "question": f"[autopilot] {workflow}/{step}: {reasons[0] if reasons else 'step failed'} - what should Friday do next?",
+            "question": question_text,
             "context": context,
             "answer_file": f"bus/answers/{question_id}.json",
         })
+        self.ask_arena_live(question_id, question_text, context)
         return question_id
+
+    def ask_arena_live(self, question_id: str, question: str, context: str) -> None:
+        """If a bridge is configured and a tab is attached, ask Arena for a decision now.
+
+        Written to bus/answers/Q-*.json so the answer is on the remote too - an
+        answer that only lived in RAM would be worthless to the next run.
+        """
+        wait = float(self.arena.get("wait") or 0)
+        if wait <= 0 or self.dry_run:
+            return
+        import urllib.error
+        import urllib.request
+
+        payload = json.dumps({"text": f"{question}\n\nContext:\n{context}", "wait": wait}).encode("utf-8")
+        req = urllib.request.Request(
+            self.arena.get("url", "http://127.0.0.1:8787").rstrip("/") + "/ask",
+            data=payload,
+            headers={"Content-Type": "application/json",
+                     "X-Bridge-Token": self.arena.get("token", "")},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=wait + 20) as resp:
+                out = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            out = {"ok": False, "reason": f"bridge http {exc.code}"}
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            out = {"ok": False, "reason": f"bridge unreachable: {exc}"}
+
+        if not out.get("ok"):
+            log(f"  arena  : no live answer ({out.get('reason')}) - question stays queued", self.quiet)
+            return
+
+        answer = (out.get("answer") or "").strip()
+        self.arena_answers[question_id] = answer
+        fb.save_json(self.bus.path("answers", f"{question_id}.json"), {
+            "schema": fb.SCHEMA_ANSWER,
+            "id": question_id,
+            "answered_at_utc": iso(),
+            "answered_by": "arena-via-bridge",
+            "answer": answer,
+            "channel": "browser-bridge",
+        })
+        log(f"  arena  : answered live ({len(answer)} chars) -> bus/answers/{question_id}.json", self.quiet)
 
     # -- one step
     def run_step(self, workflow_name: str, step: dict, run_id: str, attempt: int) -> dict:
@@ -498,6 +550,7 @@ class Autopilot:
             "steps": steps_out,
             "reasons": reasons,
             "escalation_request": escalation,
+            "arena_answer": self.arena_answers.get(escalation) if escalation else None,
             "host": self.bus.cfg.get("host"),
             "dry_run": self.dry_run,
             "policy_require_approval": self.policy.get("require_approval"),
@@ -565,8 +618,20 @@ def make_autopilot(args) -> Autopilot:
         raise SystemExit(f"no actions loaded from {root / 'bus' / 'actions.json'} - copy the example first")
     policy = load_policy(root, args.policy)
     bus = fb.Bus(cfg, root, actions, quiet=args.quiet)
+    arena = None
+    wait = float(getattr(args, "arena_wait", 0) or 0)
+    if wait > 0:
+        token_path = Path(getattr(args, "arena_token_file", "") or (root / "bus" / ".local" / "bridge.token"))
+        try:
+            token = token_path.read_text(encoding="utf-8").strip()
+        except OSError:
+            raise SystemExit(f"--arena-wait needs a bridge token at {token_path} "
+                             "(start bridge/arena_bridge.py serve once to create it)")
+        arena = {"url": getattr(args, "arena_url", "http://127.0.0.1:8787"),
+                 "token": token, "wait": wait}
     # status/report/selftest have no --dry-run flag
-    return Autopilot(bus, policy, dry_run=bool(getattr(args, "dry_run", False)), quiet=args.quiet)
+    return Autopilot(bus, policy, dry_run=bool(getattr(args, "dry_run", False)), quiet=args.quiet,
+                     arena=arena)
 
 
 def cmd_run(args) -> int:
@@ -717,6 +782,10 @@ def main(argv=None) -> int:
     p.add_argument("--workflow", required=True)
     p.add_argument("--resume", action="store_true")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--arena-wait", type=float, default=0,
+                   help="ask Arena live through the browser bridge and wait this long for an answer")
+    p.add_argument("--arena-url", default="http://127.0.0.1:8787")
+    p.add_argument("--arena-token-file", default="")
     p.set_defaults(func=cmd_run)
 
     p = sub.add_parser("loop", parents=[after], help="run a workflow repeatedly until achieved")
@@ -724,6 +793,10 @@ def main(argv=None) -> int:
     p.add_argument("--interval", type=int, default=0)
     p.add_argument("--resume", action="store_true")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--arena-wait", type=float, default=0,
+                   help="ask Arena live through the browser bridge and wait this long for an answer")
+    p.add_argument("--arena-url", default="http://127.0.0.1:8787")
+    p.add_argument("--arena-token-file", default="")
     p.set_defaults(func=cmd_loop)
 
     p = sub.add_parser("approve", parents=[after], help="approve one gated action for the saved run")

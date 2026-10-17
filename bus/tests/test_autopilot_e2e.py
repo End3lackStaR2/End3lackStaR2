@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import json
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -29,6 +32,7 @@ HERE = Path(__file__).resolve().parent
 BUS_DIR = HERE.parent
 FRIDAY = BUS_DIR / "friday_bus.py"
 AUTOPILOT = BUS_DIR / "autopilot.py"
+BRIDGE = BUS_DIR.parent / "bridge" / "arena_bridge.py"
 
 GIT_ID = ["-c", "user.name=autopilot-test", "-c", "user.email=autopilot-test@localhost"]
 
@@ -274,6 +278,90 @@ class AutopilotE2ETest(unittest.TestCase):
         self.assertEqual(summary["runs"], 1)
         self.assertEqual(summary["achieved"], 1)
         self.assertEqual(summary["success_rate"], 100.0)
+
+
+    # -- live Arena channel -------------------------------------------------
+    def _free_port(self):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    def test_escalation_can_get_a_live_answer_from_arena(self):
+        """The whole point of the bridge: a run that gets stuck asks and gets an answer."""
+        import urllib.request
+
+        token_file = self.pilot_dir / "bus" / ".local" / "bridge.token"
+        token_file.parent.mkdir(parents=True, exist_ok=True)
+        token_file.write_text("test-token-" + "x" * 20, encoding="utf-8")
+        port = self._free_port()
+
+        bridge = subprocess.Popen(
+            [sys.executable, str(BRIDGE), "serve", "--port", str(port),
+             "--token-file", str(token_file), "--audit", "none", "--min-interval", "0"],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        def stop_bridge():
+            bridge.terminate()
+            bridge.wait(timeout=5)
+            if bridge.stdout:
+                bridge.stdout.close()
+
+        self.addCleanup(stop_bridge)
+
+        def call(route, payload):
+            req = urllib.request.Request(
+                f"http://127.0.0.1:{port}{route}", data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json", "X-Bridge-Token": token_file.read_text().strip()},
+                method="POST")
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                return json.loads(resp.read().decode())
+
+        # fake extension: take the question, answer it like Arena would
+        def fake_browser():
+            deadline = time.time() + 25
+            while time.time() < deadline:
+                try:
+                    task = call("/next", {}).get("task")
+                except OSError:
+                    time.sleep(0.1)
+                    continue
+                if task:
+                    call("/answer", {"id": task["id"], "text": "roll the key back, then re-run the probe"})
+                    return
+                time.sleep(0.1)
+
+        th = threading.Thread(target=fake_browser, daemon=True)
+        th.start()
+        time.sleep(0.5)
+
+        self.write_policy({"wf": {"steps": [
+            {"id": "one", "action": "bad", "accept": {"exit_code": 0}, "on_fail": "escalate"},
+        ]}})
+
+        proc = self.pilot("run", "--workflow", "wf", "--arena-wait", "20", "--arena-url", f"http://127.0.0.1:{port}")
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("answered live", proc.stdout)
+
+        th.join(5)
+        answers = self.remote_glob("bus/answers/Q-*.json")
+        self.assertEqual(len(answers), 1, "the answer must be on the remote, not just in RAM")
+        doc = json.loads(answers[0].read_text(encoding="utf-8"))
+        self.assertEqual(doc["schema"], "friday.answer/v1")
+        self.assertIn("roll the key back", doc["answer"])
+
+        report = json.loads(self.remote_glob("bus/reports/R-*.json")[0].read_text(encoding="utf-8"))
+        self.assertEqual(report["status"], "needs_review")
+        self.assertIn("roll the key back", report["arena_answer"])
+
+    def test_without_arena_wait_nothing_blocks(self):
+        """Default must stay offline: no bridge, no delay, question only queued."""
+        self.write_policy({"wf": {"steps": [
+            {"id": "one", "action": "bad", "accept": {"exit_code": 0}, "on_fail": "escalate"},
+        ]}})
+        started = time.time()
+        proc = self.pilot("run", "--workflow", "wf")
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertLess(time.time() - started, 20)
+        self.assertEqual(self.remote_glob("bus/answers/Q-*.json"), [])
 
 
 if __name__ == "__main__":

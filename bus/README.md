@@ -105,4 +105,5 @@ Get-ChildItem -LiteralPath $r -Filter '*.json' | Sort-Object LastWriteTime -Desc
 - เริ่มจาก: คัดลอก `policy.json.example` → `policy.json` แล้ว `run --workflow kick_repair --dry-run`
 - ทดสอบ: `python autopilot.py selftest` (8) และ `python -m unittest -v test_autopilot_e2e` (10, จาก `tests/`)
 
-> Arena เรียกจากเครื่องไม่ได้ (ไม่มี API/MCP) — autonomy คือ policy + evaluation + queued questions/reports
+> Arena ไม่มี API/MCP — autonomy คือ policy + evaluation + queued questions/reports
+> ถ้าต้องการให้ Friday **ถาม Arena สด ๆ** ใช้ `bridge/` (ส่วนขยายเบราว์เซอร์) + `--arena-wait` — ดู [`bridge/README-TH.md`](../bridge/README-TH.md)
