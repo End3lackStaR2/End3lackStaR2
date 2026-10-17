@@ -1,0 +1,105 @@
+{
+  "schema": "friday.policy/v1",
+  "_readme": [
+    "THIS FILE IS THE DECISIONS. Friday runs it without asking, so it is the thing you approve once.",
+    "Copy to bus/policy.json (gitignored) and edit. Friday never edits it - it only proposes changes in bus/suggestions/.",
+    "",
+    "workflow.steps[]:",
+    "  id          unique name inside the workflow",
+    "  action      must exist in bus/actions.json (that is still the execution whitelist)",
+    "  params      passed to the action; validated against its pattern",
+    "  accept      what counts as success (all must hold):",
+    "                exit_code            number or list",
+    "                status               'ok' | 'failed' | 'timeout' | ...",
+    "                stdout_regex         list of regexes that must match output",
+    "                stdout_absent_regex  list of regexes that must NOT match output",
+    "                max_duration_ms      upper bound on runtime",
+    "  retries     extra attempts after the first failure",
+    "  on_pass     next | goto:<step id> | finish",
+    "  on_fail     retry | next | goto:<step id> | escalate | abort   (default: escalate)",
+    "",
+    "Guardrails: max_total_actions, max_consecutive_failures, cooldown_seconds,",
+    "suggestion_threshold, require_approval (actions that need a one-time 'approve').",
+    "Kill switch: create bus/.local/STOP - the next run/loop iteration aborts immediately."
+  ],
+
+  "max_total_actions": 12,
+  "max_consecutive_failures": 3,
+  "cooldown_seconds": 0,
+  "suggestion_threshold": 2,
+  "require_approval": ["hermes_fix"],
+
+  "workflows": {
+    "kick_repair": {
+      "description": "Get the Kick notifier healthy after a Pusher key rotation, and stop when it is proven healthy.",
+      "steps": [
+        {
+          "id": "doctor",
+          "action": "hermes_doctor",
+          "params": {},
+          "accept": {
+            "exit_code": 0,
+            "stdout_absent_regex": ["no config\\.json found", "no log file found"]
+          },
+          "on_fail": "next"
+        },
+        {
+          "id": "fix",
+          "action": "hermes_fix",
+          "params": { "app_dir": "D:\\HermesAI\\OBS" },
+          "accept": {
+            "exit_code": 0,
+            "stdout_regex": ["VERDICT:\\s*OK"]
+          },
+          "retries": 1,
+          "on_pass": "goto:verify",
+          "on_fail": "goto:probe"
+        },
+        {
+          "id": "probe",
+          "action": "kick_probe",
+          "params": {},
+          "accept": {
+            "exit_code": 0,
+            "stdout_regex": ["\"connected\":\\s*true"],
+            "stdout_absent_regex": ["\"error_code\":\\s*4001"]
+          },
+          "retries": 1,
+          "on_fail": "escalate"
+        },
+        {
+          "id": "verify",
+          "action": "hermes_verify",
+          "params": {},
+          "accept": {
+            "stdout_regex": ["VERDICT:\\s*OK"],
+            "stdout_absent_regex": ["pusher:error|\\b4001\\b"]
+          },
+          "on_pass": "finish",
+          "on_fail": "goto:probe"
+        }
+      ]
+    },
+
+    "evidence_only": {
+      "description": "Only collect and publish the evidence, change nothing on the machine.",
+      "steps": [
+        {
+          "id": "collect",
+          "action": "collect_evidence",
+          "params": { "app_dir": "D:\\HermesAI\\OBS" },
+          "accept": { "exit_code": 0 },
+          "on_fail": "escalate"
+        },
+        {
+          "id": "push",
+          "action": "push_evidence",
+          "params": { "app_dir": "D:\\HermesAI\\OBS" },
+          "accept": { "exit_code": 0 },
+          "on_pass": "finish",
+          "on_fail": "escalate"
+        }
+      ]
+    }
+  }
+}
