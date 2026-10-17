@@ -9,6 +9,7 @@ HermesAI OBS Kick notifier (`D:\HermesAI\OBS`).
 | --- | --- |
 | `hermes/hermes.ps1` | One-shot repair/verify tool (Windows PowerShell 5.1+, no python needed): finds the real config/log/python/launch command, tests both Pusher app keys live over a WebSocket, writes `kick_pusher.json`, patches `config.json`, restarts the notifier, then proves success from **new** log bytes only and writes EN/TH reports. |
 | `hermes/hermes.cmd`, `hermes/selfcheck.cmd` | Double-click launchers for `fix` and for the self tests. |
+| `hermes/run-fix.cmd` | Double-click launcher for the narrow Kick repair: clones/updates `%USERPROFILE%\ebs`, runs `fix-now.ps1` with the execution-policy bypass, prints the verdict. Accepts `-DryRun`. |
 | `hermes/tools/kick_pusher_probe.py` | Standard-library Pusher/WebSocket probe (no pip install) with a loopback end-to-end self test. |
 | `hermes/tools/patch_kick_app.py` | Data + code patcher: creates `backend/config/pusher_config.py`, makes the Kick socket accept several keys and rotate automatically on `pusher:error` 4001/4003/4009. Backups + `--dry-run` + `--revert`. |
 | `hermes/tools/test_patch_kick_app.py` | 10 unit tests that import the patched code and assert the key really rotates. |
