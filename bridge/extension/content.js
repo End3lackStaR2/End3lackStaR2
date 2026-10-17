@@ -135,7 +135,6 @@
     }
 
     const box = findContainer(composer);
-    const beforeLen = (box.innerText || "").length;
 
     setText(composer, text);
     await sleep(150);
@@ -154,7 +153,9 @@
     while (Date.now() - started < MAX_WAIT_MS) {
       await sleep(700);
       const t = box.innerText || "";
-      const at = t.indexOf(marker, Math.max(0, beforeLen - 400));
+      // lastIndexOf, not indexOf(offset): the newest question carries the newest
+      // marker, and a scroll container can already hold text before it.
+      const at = t.lastIndexOf(marker);
       if (at >= 0) {
         answer = t.slice(at + marker.length);
         if (answer !== last) { last = answer; lastChange = Date.now(); }

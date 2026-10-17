@@ -50,6 +50,23 @@ python (Join-Path $b 'arena_bridge.py') serve
 
 ---
 
+## ทดสอบให้แน่ใจก่อนแตะ Arena จริง (แนะนำมาก)
+
+มีหน้าแชทจำลองในเครื่อง (`mock_chat.html`) ให้ทดสอบทั้งสายพานโดยไม่ต้องยุ่งกับ Arena:
+
+```powershell
+$d = Join-Path $env:USERPROFILE 'hermes-bus'
+$b = Join-Path $d 'bridge'
+python (Join-Path $b 'arena_bridge.py') serve          # หน้าต่างที่ 1
+python (Join-Path $b 'mock_chat.py')                   # หน้าต่างที่ 2  -> http://127.0.0.1:8799
+```
+
+1. เปิด `http://127.0.0.1:8799` แล้วกด **Attach to this tab** ใน popup
+2. รัน `python (Join-Path $b 'arena_bridge.py') ask "hello"`
+
+ถ้าได้ `ได้รับคำถามแล้ว (marker [friday:xxxxxx]) … คำตอบจำลอง #1 …` = **bridge + background + content.js ทำงานครบ**
+ถ้าขั้นนี้ผ่านแต่ Arena จริงไม่ผ่าน = ปัญหาอยู่ที่ DOM ของ Arena ไม่ใช่การติดตั้ง (ส่ง log `[friday-bridge]` มา ผมปรับ heuristic ให้)
+
 ## ใช้งาน
 
 **ถามตรง ๆ จาก command line:**
@@ -118,9 +135,16 @@ python (Join-Path $b 'arena_bridge.py') status
 **ทดสอบโดยไม่ใช้เบราว์เซอร์:**
 
 ```powershell
-python (Join-Path $b 'arena_bridge.py') selftest   # 12 checks
-cd (Join-Path $b 'tests'); python -m unittest -v test_bridge_e2e   # 8 tests
+python (Join-Path $b 'arena_bridge.py') selftest                 # 12 checks
+cd (Join-Path $b 'tests')
+python -m unittest -v test_bridge_e2e test_mock_chat             # 8 + 4 tests
+npm install jsdom
+node test_content_js.mjs                                         # 7 checks on content.js
 ```
+
+> `test_content_js.mjs` โหลด `content.js` เข้า jsdom กับหน้า mock แล้วยืนยันว่า
+> หาช่องพิมพ์เจอ → ใส่ marker → รอข้อความนิ่ง → ส่งคำตอบกลับพร้อม id ที่ถูก
+> (บั๊กจริง 1 ตัวถูกจับได้ด้วยเทสต์นี้: การหา marker ด้วย offset ทำให้พลาดเมื่อมีข้อความก่อนหน้า — แก้เป็น `lastIndexOf` แล้ว)
 
 ---
 
@@ -149,3 +173,14 @@ bus/answers/Q-*.json  +  report.arena_answer  (push ขึ้น repo)
 - `extension/background.js` — คุยกับ bridge เท่านั้น (เลี่ยง CORS ของหน้าเว็บ)
 - `extension/content.js` — พิมพ์/อ่านในหน้าแชท (ไม่มี selector ตายตัว)
 - `extension/popup.html|js` — ใส่ token, ทดสอบ, Attach
+
+---
+
+## ไฟล์ทดสอบทั้งหมด
+
+| ไฟล์ | ต้องมี | ตรวจอะไร |
+| --- | --- | --- |
+| `arena_bridge.py selftest` | python | 12 checks: token, คิว, 1-in-flight, timeout, fail, audit |
+| `tests/test_bridge_e2e.py` | python | 8 tests ผ่าน HTTP จริง (มี fake extension) |
+| `tests/test_mock_chat.py` | python | 4 tests: หน้า mock มีช่องพิมพ์/ปุ่ม/transcript ครบ |
+| `tests/test_content_js.mjs` | node + jsdom | 7 checks: content.js หา composer/ใส่ marker/อ่านคำตอบ |
