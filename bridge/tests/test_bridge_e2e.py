@@ -182,6 +182,42 @@ class BridgeE2E(unittest.TestCase):
         joined = json.dumps(lines)
         self.assertNotIn("audit me", joined, "the audit stores sizes, not the text")
 
+    def test_09_cli_ask_is_the_command_from_the_readme(self):
+        """The exact command a user types, end to end, with a fake extension."""
+        import threading
+        import time as _time
+
+        answer_text = "ตอบจาก CLI: ตรวจ log ก่อน"
+
+        def fake_browser():
+            deadline = _time.time() + 20
+            while _time.time() < deadline:
+                task = http(self.port, self.token, "/next", {})[1].get("task")
+                if task:
+                    http(self.port, self.token, "/answer", {"id": task["id"], "text": answer_text})
+                    return
+                _time.sleep(0.1)
+
+        th = threading.Thread(target=fake_browser, daemon=True)
+        th.start()
+        _time.sleep(0.4)
+
+        proc = subprocess.run(
+            [sys.executable, str(BRIDGE), "ask", "hello from the command line",
+             "--wait", "15", "--port", str(self.port), "--token-file", str(self.token_file)],
+            capture_output=True, text=True, timeout=60)
+        th.join(5)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        self.assertEqual(proc.stdout.strip(), answer_text)
+
+    def test_10_cli_ask_fails_cleanly_when_nobody_answers(self):
+        proc = subprocess.run(
+            [sys.executable, str(BRIDGE), "ask", "nobody will answer",
+             "--wait", "0.6", "--port", str(self.port), "--token-file", str(self.token_file)],
+            capture_output=True, text=True, timeout=60)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        self.assertIn("timeout", proc.stderr)
+
     def test_08_empty_question_is_rejected(self):
         out = http(self.port, self.token, "/ask", {"text": "   ", "wait": 0})[1]
         self.assertFalse(out.get("ok"))
