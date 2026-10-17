@@ -148,6 +148,37 @@ Write-Host ('RESULT_JSON ' + (@{ verdict = $v; new_bytes = $new.Length; new_line
 
 ---
 
+## ⚠️ 4 บั๊กที่ทำให้บล็อกที่คัดลอกมา "รันไม่ผ่าน" (ตรวจด้วย linter แล้ว)
+
+ถ้าคุณเจอบล็อกเวอร์ชันที่ถูกตัด/จัดรูปใหม่ ให้เช็ค 4 จุดนี้ก่อน — ทั้ง 4 ทำให้ PowerShell ล้มทันที:
+
+| # | บรรทัดที่พัง | ทำไมพัง | ที่ถูก |
+| --- | --- | --- | --- |
+| 1 | `$py = $py ?? (Get-Command python).Source` | `??` เป็นของ **PowerShell 7+** เท่านั้น บน PS 5.1 (ค่าตั้งต้นของ Windows) เป็น **parse error ทั้งสคริปต์** | `if (-not $py) { $cmd = Get-Command python -ErrorAction SilentlyContinue; if ($cmd) { $py = $cmd.Source } }` |
+| 2 | `$cwd = $app` | `$app` **ไม่เคยถูกกำหนด** (บรรทัดตั้งค่าหายไป) → `-WorkingDirectory $null` | กำหนด `$app = 'D:\HermesAI\OBS'` ที่ต้นบล็อก |
+| 3 | `[IO.File]::Open($log, ...)` | `$log` **ไม่เคยถูกกำหนด** (ใช้ literal เฉพาะใน `if` แต่ส่ง `$log`) → `ArgumentException` | `$log = Join-Path $fld ('kick_' + 'notifier' + '.log')` แล้วใช้ `$log` ตลอด |
+| 4 | `-ForegroundColor (if($v -eq 'OK'){'Green'}...)` | PowerShell **ไม่มี if เป็น expression** ในวงเล็บ → parse error | `$col = if ($v -eq 'OK') { 'Green' } elseif ($v -eq 'KEY_REJECTED') { 'Red' } else { 'Yellow' }` แล้ว `Write-Host ... -ForegroundColor $col` |
+
+> ทั้ง 3 ตัว ($app, $log, สี) และ `??` ถูกแก้ในไฟล์ **[fix-now.ps1](fix-now.ps1)** แล้ว — ใช้ไฟล์นั้นแทนการวางบล็อกจากแชท
+
+## วิธีที่แนะนำ: รันเป็นไฟล์ (ไม่มีอะไรถูกตัดหาย)
+
+```powershell
+# ถ้ามี repo นี้อยู่ในเครื่องแล้ว
+$f = Get-ChildItem -LiteralPath (Join-Path $env:USERPROFILE 'hermes-kick\hermes') -Filter 'fix-now.ps1' -ErrorAction SilentlyContinue
+if (-not $f) { $f = Get-ChildItem -Path $env:USERPROFILE -Filter 'fix-now.ps1' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 }
+if (-not $f) { Write-Host 'ไม่พบไฟล์ - ใช้วิธีคัดลอกบล็อกด้านบน หรือโหลด zip' -ForegroundColor Yellow } else {
+    powershell -NoProfile -ExecutionPolicy Bypass -File $f.FullName -DryRun          # ดูก่อน ไม่แก้อะไร
+    powershell -NoProfile -ExecutionPolicy Bypass -File $f.FullName                  # ทำจริง (ถามก่อนฆ่าโปรเซส)
+    powershell -NoProfile -ExecutionPolicy Bypass -File $f.FullName -Force -Quiet    # ไม่ถาม (สำหรับ Task Scheduler)
+}
+```
+
+ไฟล์นี้รองรับ: `-AppDir`, `-LogPath`, `-EntryScript`, `-PythonPath`, `-WaitSeconds`, `-TailLines`, `-NoKill`, `-DryRun`, `-Force`, `-Quiet`
+และเขียนรายงานไว้ที่ `files\hermes_fix_now_report.txt`
+
+---
+
 ## อ่านผลยังไง
 
 | VERDICT | หมายความว่า | ทำต่อ |
