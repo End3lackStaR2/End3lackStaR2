@@ -95,3 +95,14 @@ Get-ChildItem -LiteralPath $r -Filter '*.json' | Sort-Object LastWriteTime -Desc
 - รันแบบไม่มี shell, มี timeout ทุก action, และปิดความลับก่อน push (token/JWT/webhook → `<redacted>`)
 - `actions.json`, `bus.config.json`, `.local/` **ไม่ถูก commit** (อยู่ใน .gitignore ของ bus)
 - repo นี้เป็น public → ถ้าอนาคตงานมีข้อมูลอ่อนไหว ให้เปลี่ยน `repo_url` ไป repo ส่วนตัว
+
+## ให้ Friday ทำงานเอง (autopilot)
+
+`autopilot.py` ทำให้ Friday ตัดสินใจเองได้ **ภายใน policy ที่คุณอนุมัติครั้งเดียว** —
+ประเมินผลจริงด้วย `accept` criteria, retry/goto/escalate, เขียนรายงานและข้อเสนอปรับปรุงเอง
+
+- อ่านภาพรวม + ข้อจำกัดของ Arena: [`AUTONOMY-TH.md`](AUTONOMY-TH.md)
+- เริ่มจาก: คัดลอก `policy.json.example` → `policy.json` แล้ว `run --workflow kick_repair --dry-run`
+- ทดสอบ: `python autopilot.py selftest` (8) และ `python -m unittest -v test_autopilot_e2e` (10, จาก `tests/`)
+
+> Arena เรียกจากเครื่องไม่ได้ (ไม่มี API/MCP) — autonomy คือ policy + evaluation + queued questions/reports
