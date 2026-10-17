@@ -121,6 +121,17 @@ python $f.FullName init --dir (Split-Path -Parent $bus)
 งานที่ Arena ส่งมาจะรันได้เฉพาะ action ใน `bus/actions.json` ของคุณ (มีตัวอย่างพร้อม action
 ของชุดเครื่องมือนี้อยู่แล้ว: `hermes_doctor`, `hermes_fix`, `kick_probe`, `collect_evidence`, `push_evidence`, `log_tail`)
 
+## ปิดเคสเดี๋ยวนี้ (ไม่ต้องโหลดอะไร)
+
+ถ้าสถานะคือ "config แก้ key ใหม่แล้ว + token สด + แต่ WS ยังโดนปฏิเสธ" → ปัญหาคือ **โปรเซสเก่ายังรันอยู่**
+ใช้ **[FIX-NOW-TH.md](FIX-NOW-TH.md)** — บล็อก PowerShell ก้อนเดียว ที่:
+
+- เช็คว่า key เก่าไม่ได้ฝังอยู่ใน **โค้ด** (ถ้าฝังอยู่ แก้ config ไม่มีทางได้ผล)
+- หาโปรเซสเฉพาะของ notifier แล้วถามก่อนฆ่า (**ไม่ใช้ `taskkill /IM python.exe /F`**)
+- หา entry script / python / working dir ให้เอง (ไม่ต้องพิมพ์ชื่อไฟล์)
+- จำ offset ของ log แล้วรันใหม่ → อ่าน **เฉพาะไบต์ใหม่** → พิมพ์ `VERDICT: OK / KEY_REJECTED / NO_FRESH_EVIDENCE`
+- ถ้าไม่มีบรรทัดใหม่เลย จะโชว์ stdout/stderr ของโปรเซสใหม่ให้ทันที
+
 ## ทางเลือกที่ไม่ต้องโหลดอะไรเลย
 
 ถ้าดาวน์โหลดจาก GitHub ไม่ได้ หรือข้อความที่คัดลอกโดน markdown ทำ URL พัง ให้ใช้
