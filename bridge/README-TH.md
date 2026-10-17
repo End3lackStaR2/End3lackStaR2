@@ -52,12 +52,28 @@ python (Join-Path $b 'arena_bridge.py') serve
 
 ## ทางลัด: ดับเบิลคลิกครั้งเดียว
 
+> **อย่ารัน `./setup.ps1` เปล่า ๆ** — Windows ที่เพิ่งลงใหม่ตั้ง policy ไว้ที่ **Restricted**
+> จะขึ้น `cannot be loaded because running scripts is disabled on this system`
+> ใช้ **`setup.cmd`** (ดับเบิลคลิก) หรือคำสั่งเต็ม:
+>
+> ```powershell
+> powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $b 'setup.ps1')
+> ```
+>
+> ถ้าโหลด repo มาเป็นไฟล์ zip แล้ว Windows ติด "Mark of the Web" ให้ปลดก่อนหนึ่งครั้ง:
+> `Get-ChildItem -LiteralPath $b -Recurse | Unblock-File`
+
 ในโฟลเดอร์ `bridge` มี `setup.cmd` — **ดับเบิลคลิก** แล้วมันจะ
 
 1. หา `python` ให้เอง (PATH → `py`)
 2. เปิด bridge ในหน้าต่างของตัวเอง (สร้าง token ให้ถ้ายังไม่มี)
 3. เปิดหน้าแชทจำลองในอีกหน้าต่าง
-4. พิมพ์ **TOKEN** ออกมาให้คัดลอก และเปิดเบราว์เซอร์ไปที่หน้า mock ให้เลย
+4. **ยิง HTTP ไปที่ `/health` ด้วย token จริงเพื่อยืนยันว่า bridge ตอบ** ก่อนบอกว่าสำเร็จ
+5. พิมพ์ **TOKEN** ออกมาให้คัดลอก และเปิดเบราว์เซอร์ไปที่หน้า mock ให้เลย
+6. `setup.cmd -Ask` = ถามจริงหนึ่งครั้งผ่านแท็บที่ Attach ไว้ แล้วพิมพ์ `PROVEN:` เมื่อครบวงจร
+
+- ถ้า port 8787 ถูกใช้อยู่แล้ว **และตอบด้วย token เดิมได้** → ใช้ตัวที่รันอยู่ต่อ ไม่ล้ม
+- ถ้า port ถูกใช้โดยโปรแกรมอื่น → บอกให้ชัดและเสนอ `setup.cmd -Port 8788`
 
 ปิดทุกอย่างด้วย `setup.cmd -Stop` (มันจะฆ่าเฉพาะโปรเซสที่รันสคริปต์สองตัวนี้ ไม่แตะ python อื่นในเครื่อง)
 
@@ -67,17 +83,25 @@ python (Join-Path $b 'arena_bridge.py') serve
 
 ## ทดสอบให้แน่ใจก่อนแตะ Arena จริง (แนะนำมาก)
 
-มีหน้าแชทจำลองในเครื่อง (`mock_chat.html`) ให้ทดสอบทั้งสายพานโดยไม่ต้องยุ่งกับ Arena:
+มีหน้าแชทจำลองในเครื่อง ให้ทดสอบทั้งสายพานโดยไม่ต้องยุ่งกับ Arena — และไม่ต้องพิมพ์ชื่อไฟล์เลย:
 
 ```powershell
 $d = Join-Path $env:USERPROFILE 'hermes-bus'
 $b = Join-Path $d 'bridge'
-python (Join-Path $b 'arena_bridge.py') serve          # หน้าต่างที่ 1
-python (Join-Path $b 'mock_chat.py')                   # หน้าต่างที่ 2  -> http://127.0.0.1:8799
+$setup = Join-Path $b 'setup.ps1'
+powershell -NoProfile -ExecutionPolicy Bypass -File $setup
 ```
 
-1. เปิด `http://127.0.0.1:8799` แล้วกด **Attach to this tab** ใน popup
-2. รัน `python (Join-Path $b 'arena_bridge.py') ask "hello"`
+1. มันเปิด `http://127.0.0.1:8799` ให้ (ถ้าไม่ ให้เปิดเอง) แล้วกด **Attach to this tab** ใน popup
+2. ตรวจทั้งวงจรในคำสั่งเดียว:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File $setup -Ask
+```
+
+ขึ้น `PROVEN: bridge + extension + page round trip works.` = ครบวงจรจริง
+
+> หรือถ้าอยากถามเองแบบกำหนดข้อความ: `-Ask -AskText "hello"` / รอได้ถึง `-AskWait 300`
 
 ถ้าได้ `ได้รับคำถามแล้ว (marker [friday:xxxxxx]) … คำตอบจำลอง #1 …` = **bridge + background + content.js ทำงานครบ**
 ถ้าขั้นนี้ผ่านแต่ Arena จริงไม่ผ่าน = ปัญหาอยู่ที่ DOM ของ Arena ไม่ใช่การติดตั้ง (ส่ง log `[friday-bridge]` มา ผมปรับ heuristic ให้)
@@ -150,11 +174,13 @@ python (Join-Path $b 'arena_bridge.py') status
 **ทดสอบโดยไม่ใช้เบราว์เซอร์:**
 
 ```powershell
-python (Join-Path $b 'arena_bridge.py') selftest                 # 12 checks
-cd (Join-Path $b 'tests')
-python -m unittest -v test_bridge_e2e test_mock_chat             # 8 + 4 tests
-npm install jsdom
-node test_content_js.mjs                                         # 7 checks on content.js
+$t = Join-Path $b 'tests'
+$svc = Get-ChildItem -LiteralPath $b -Filter 'arena*.py' | Select-Object -First 1
+python $svc.FullName selftest                    # 12 checks
+cd $t
+python -m unittest test_bridge_e2e test_mock_chat test_launcher   # 10 + 4 + 13
+npm install                                      # jsdom (ตาม package.json)
+node test_content_js.mjs                         # 7 checks on content.js
 ```
 
 > `test_content_js.mjs` โหลด `content.js` เข้า jsdom กับหน้า mock แล้วยืนยันว่า
@@ -199,3 +225,4 @@ bus/answers/Q-*.json  +  report.arena_answer  (push ขึ้น repo)
 | `tests/test_bridge_e2e.py` | python | 8 tests ผ่าน HTTP จริง (มี fake extension) |
 | `tests/test_mock_chat.py` | python | 4 tests: หน้า mock มีช่องพิมพ์/ปุ่ม/transcript ครบ |
 | `tests/test_content_js.mjs` | node + jsdom | 7 checks: content.js หา composer/ใส่ marker/อ่านคำตอบ |
+| `tests/test_launcher.py` | python | 13 checks: glob ไม่กำกวม, token path ตรงกับ bridge, ASCII, ไม่มี PS7 syntax, README สอนคำสั่งที่รันได้จริง |

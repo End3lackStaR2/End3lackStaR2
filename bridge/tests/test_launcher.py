@@ -10,6 +10,7 @@ Run: python -m unittest -v test_launcher      (from bridge/tests)
 
 from __future__ import annotations
 
+import json
 import re
 import unittest
 from pathlib import Path
@@ -44,6 +45,18 @@ class LauncherTest(unittest.TestCase):
         raw = SETUP_PS1.read_bytes()
         self.assertTrue(all(b < 128 for b in raw), "keep setup.ps1 ASCII (or add a UTF-8 BOM)")
 
+    def test_jsdom_is_declared_for_the_content_test(self):
+        pkg = json.loads((HERE / "package.json").read_text(encoding="utf-8"))
+        self.assertIn("jsdom", pkg.get("devDependencies", {}),
+                      "test_content_js.mjs needs jsdom, so 'npm install' here must fetch it")
+        self.assertEqual(pkg["scripts"]["test"], "node test_content_js.mjs")
+
+    def test_setup_cmd_documents_the_switches_it_forwards(self):
+        body = SETUP_CMD.read_text(encoding="utf-8")
+        for flag in ("-Ask", "-Stop", "-Port"):
+            self.assertIn(flag, body, f"setup.cmd should mention {flag}")
+        self.assertIn("%*", body, "switches must reach setup.ps1")
+
     def test_setup_ps1_avoids_ps7_only_syntax(self):
         src = SETUP_PS1.read_text(encoding="utf-8")
         self.assertNotIn("??", src, "null-coalescing is PS7-only")
@@ -54,6 +67,36 @@ class LauncherTest(unittest.TestCase):
         src = SETUP_PS1.read_text(encoding="utf-8")
         self.assertEqual(src.count("{"), src.count("}"))
         self.assertEqual(src.count("("), src.count(")"))
+
+    def test_token_path_matches_what_the_bridge_writes(self):
+        """setup.ps1 tells the user where the token is; arena_bridge.py decides.
+
+        These are two separate files, so nothing but this test keeps them equal.
+        """
+        bridge = (BRIDGE / "arena_bridge.py").read_text(encoding="utf-8")
+        setup = SETUP_PS1.read_text(encoding="utf-8")
+        self.assertIn('REPO / "bus" / ".local" / "bridge.token"', bridge,
+                      "arena_bridge.py changed its default token location")
+        for part in ("'bus'", "'.local'", "'bridge.token'"):
+            self.assertIn(part, setup, f"setup.ps1 no longer joins {part}")
+
+    def test_setup_can_prove_the_round_trip(self):
+        src = SETUP_PS1.read_text(encoding="utf-8")
+        self.assertIn("[switch]$Ask", src)
+        self.assertIn("$LASTEXITCODE", src, "must report whether the ask really worked")
+        self.assertIn("PROVEN", src, "the user needs an unambiguous success line")
+
+    def test_setup_reuses_a_healthy_bridge_instead_of_failing(self):
+        src = SETUP_PS1.read_text(encoding="utf-8")
+        self.assertIn("$reused = $false", src)
+        # the flag must be decided before it is read
+        self.assertLess(src.index("$reused = $false"), src.index("if (-not $reused)"))
+
+    def test_readme_gives_a_command_that_survives_the_script_policy(self):
+        readme = (BRIDGE / "README-TH.md").read_text(encoding="utf-8")
+        self.assertTrue("-ExecutionPolicy Bypass" in readme or "setup.cmd" in readme,
+                        "a bare '.\setup.ps1' is blocked by the default Windows policy")
+        self.assertIn("Restricted", readme, "explain why the long form is needed")
 
     def test_stop_switch_only_targets_our_scripts(self):
         src = SETUP_PS1.read_text(encoding="utf-8")

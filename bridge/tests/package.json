@@ -1,0 +1,13 @@
+{
+  "name": "friday-bridge-tests",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Headless check that content.js can drive a chat page (jsdom only, no browser).",
+  "type": "module",
+  "scripts": {
+    "test": "node test_content_js.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^24.1.3"
+  }
+}
