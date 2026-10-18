@@ -308,10 +308,24 @@ if ($newLines.Count -gt 0) {
 # not only to the log file. Both files are truncated by Start-Process, so
 # everything in them is new. The verdict must read them too, otherwise a
 # healthy run is reported as NO_FRESH_EVIDENCE.
+# The child process still holds these files open, so read them with
+# FileShare.ReadWrite (same as the log read above) and never let a locked
+# file break the verdict.
 $capturedText = ''
 foreach ($file in @($outFile, $errFile)) {
     if (Test-Path -LiteralPath $file) {
-        $capturedText += [IO.File]::ReadAllText($file) + "`n"
+        try {
+            $fs = [IO.File]::Open($file, 'Open', 'Read', 'ReadWrite')
+            try {
+                $sr = New-Object IO.StreamReader($fs, [Text.Encoding]::UTF8, $true)
+                $capturedText += $sr.ReadToEnd() + "`n"
+                $sr.Dispose()
+            } finally {
+                $fs.Dispose()
+            }
+        } catch {
+            $capturedText += '(could not read ' + $file + ': ' + $_.Exception.Message + ')' + "`n"
+        }
     }
 }
 $evidence = $newText + "`n" + $capturedText

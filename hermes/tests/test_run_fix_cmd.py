@@ -117,3 +117,19 @@ class FixNowVerdictTest(unittest.TestCase):
 
     def test_key_rejection_is_checked_before_ok(self):
         self.assertLess(self.text.index("KEY_REJECTED' }"), self.text.index("verdict = 'OK'") if "verdict = 'OK'" in self.text else self.text.index("$verdict = 'OK'"))
+
+
+class FixNowLockedFileTest(unittest.TestCase):
+    """Regression: ReadAllText on the child's still-open redirect file threw
+    'being used by another process' and the verdict was lost."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = FIX.read_text(encoding="utf-8-sig")
+
+    def test_captured_files_are_read_with_shared_access(self):
+        self.assertNotIn("ReadAllText", self.text)
+        self.assertIn("'Read', 'ReadWrite'", self.text)
+
+    def test_locked_file_cannot_break_the_verdict(self):
+        self.assertIn("could not read", self.text)
