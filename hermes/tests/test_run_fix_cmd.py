@@ -97,3 +97,23 @@ class RunFixCmdTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class FixNowVerdictTest(unittest.TestCase):
+    """Regression: a healthy run whose INFO lines went to the captured stderr
+    was reported as NO_FRESH_EVIDENCE because the verdict only read the log file."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.text = FIX.read_text(encoding="utf-8-sig")
+
+    def test_verdict_reads_captured_stdout_and_stderr(self):
+        self.assertIn("$capturedText", self.text)
+        self.assertIn("$errFile", self.text.split("$capturedText", 1)[1][:400])
+        self.assertIn("$evidence -match 'pusher:error", self.text)
+
+    def test_app_success_line_counts_as_ok(self):
+        self.assertIn("Subscribed to chatrooms", self.text)
+
+    def test_key_rejection_is_checked_before_ok(self):
+        self.assertLess(self.text.index("KEY_REJECTED' }"), self.text.index("verdict = 'OK'") if "verdict = 'OK'" in self.text else self.text.index("$verdict = 'OK'"))

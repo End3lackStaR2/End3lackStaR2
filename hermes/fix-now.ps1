@@ -304,9 +304,21 @@ if ($newLines.Count -gt 0) {
     }
 }
 
+# The app writes its log lines to the captured stderr/stdout of THIS process,
+# not only to the log file. Both files are truncated by Start-Process, so
+# everything in them is new. The verdict must read them too, otherwise a
+# healthy run is reported as NO_FRESH_EVIDENCE.
+$capturedText = ''
+foreach ($file in @($outFile, $errFile)) {
+    if (Test-Path -LiteralPath $file) {
+        $capturedText += [IO.File]::ReadAllText($file) + "`n"
+    }
+}
+$evidence = $newText + "`n" + $capturedText
+
 $verdict = 'NO_FRESH_EVIDENCE'
-if ($newText -match 'pusher:error|\b4001\b') { $verdict = 'KEY_REJECTED' }
-elseif ($newText -match 'connection_established|subscription_succeeded|ChatMessageEvent') { $verdict = 'OK' }
+if ($evidence -match 'pusher:error|\b40(01|03|09)\b') { $verdict = 'KEY_REJECTED' }
+elseif ($evidence -match 'connection_established|subscription_succeeded|ChatMessageEvent|Subscribed to chatrooms') { $verdict = 'OK' }
 
 $color = 'Yellow'
 if ($verdict -eq 'OK') { $color = 'Green' }
