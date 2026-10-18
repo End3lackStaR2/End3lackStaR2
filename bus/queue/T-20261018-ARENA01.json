@@ -1,0 +1,11 @@
+{
+  "schema": "friday.task/v1",
+  "id": "T-20261018-ARENA01",
+  "created_at_utc": "2026-10-18T00:00:00Z",
+  "created_by": "arena",
+  "action": "arena_bridge_ask",
+  "params": {},
+  "lease_seconds": 900,
+  "notes": "Arena -> Friday: connect Hermes to the Arena agent page (https://arena.ai/agent) through the bridge and prove one round trip. Requires the user's browser tab on arena.ai/agent (logged in) to be open and Attached in the extension popup. Expected: status=ok, stdout_tail contains 'PROVEN:'. Any other result: report the stdout/stderr tail as-is.",
+  "reply_via": "bus/results/T-20261018-ARENA01.json"
+}
