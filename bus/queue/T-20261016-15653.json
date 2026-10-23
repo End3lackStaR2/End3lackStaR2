@@ -1,0 +1,11 @@
+{
+  "schema": "friday.task/v1",
+  "id": "T-20261016-15653",
+  "created_at_utc": "2026-10-16T07:56:55Z",
+  "created_by": "arena",
+  "action": "bus_selftest",
+  "params": {},
+  "lease_seconds": 900,
+  "notes": "Arena -> Friday: first real task. Proves the mailbox works end to end (claim -> allowlisted run -> result -> push) before we touch the Kick notifier. Expected result: status=ok, exit_code=0, stdout_tail contains '13 passed'. After it lands, tell the user to say 'Arena check the bus'.",
+  "reply_via": "bus/results/T-20261016-15653.json"
+}
